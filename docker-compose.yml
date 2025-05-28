@@ -1,0 +1,75 @@
+version: '3.8'
+
+# This is a basic placeholder docker-compose.yml for development.
+#
+# Key considerations for a real setup:
+# 1. Dockerfiles: Each service (frontend, backend) will need its own Dockerfile
+#    (e.g., Dockerfile.dev or simply Dockerfile) in its respective directory.
+#    These files define how the application image is built, dependencies installed,
+#    and how the application starts.
+# 2. Build vs. Image: The commented-out 'build' sections are what you'd use
+#    when you have Dockerfiles. For this placeholder, pre-built images are used.
+# 3. Volumes: Volumes are crucial for development as they map your local code
+#    into the container, allowing for live reloading.
+# 4. Environment Variables: Use .env files for sensitive or environment-specific
+#    configurations and reference them here.
+# 5. Networking: For services to communicate by name (e.g., frontend calling backend),
+#    Docker Compose sets up a default network. More complex network configurations
+#    can be defined if needed.
+# 6. Database: A database service (e.g., Postgres for Supabase compatibility)
+#    could be defined here if you were running it locally. Since this project
+#    targets Supabase, the database is external.
+# 7. Production: For production, you'd typically have a separate docker-compose.prod.yml
+#    or use different settings within the Dockerfiles (multi-stage builds).
+
+services:
+  frontend:
+    # build:
+    #   context: ./frontend
+    #   dockerfile: Dockerfile.dev  # Placeholder: Dockerfile needs to be created in ./frontend
+    image: node:18-alpine  # Using a pre-built Node.js image for placeholder
+    container_name: contact_form_frontend_dev
+    command: sh -c "echo 'Frontend container running (placeholder). In a real setup, this would run your dev server (e.g., npm start).' && tail -f /dev/null"
+    ports:
+      - "3000:3000"  # Standard port for React/Vue/Angular dev servers
+    volumes:
+      # Mount the local frontend directory into the container for live reloading.
+      # The Dockerfile would typically set /app as the working directory and copy package.json, run npm install, etc.
+      - ./frontend:/app
+      # Example for node_modules (can improve performance on some systems, but often not needed initially):
+      # - /app/node_modules
+    working_dir: /app # Assumes your frontend Dockerfile sets this up and runs npm install
+    environment:
+      - NODE_ENV=development
+      # Add other frontend specific environment variables here
+      # e.g., REACT_APP_API_URL=http://localhost:8000/api
+    restart: unless-stopped
+
+  backend:
+    # build:
+    #   context: ./backend
+    #   dockerfile: Dockerfile.dev  # Placeholder: Dockerfile needs to be created in ./backend
+    image: python:3.11-slim  # Using a pre-built Python image for placeholder
+    container_name: contact_form_backend_dev
+    command: sh -c "echo 'Backend container running (placeholder). In a real setup, this would run your FastAPI/uvicorn server.' && tail -f /dev/null"
+    ports:
+      - "8000:8000"  # Standard port for Python web frameworks like FastAPI/Flask
+    volumes:
+      # Mount the local backend directory into the container for live reloading.
+      # The Dockerfile would typically set /app as the working directory, copy requirements.txt, run pip install, etc.
+      - ./backend:/app
+    working_dir: /app # Assumes your backend Dockerfile sets this up and runs pip install
+    environment:
+      - PYTHONUNBUFFERED=1 # Ensures print statements and logs are sent straight to terminal
+      - APP_ENV=development
+      # Add other backend specific environment variables here
+      # e.g., DATABASE_URL, API_KEYS (preferably via .env file and docker-compose env_file property)
+    restart: unless-stopped
+
+# Notes on further development:
+# - Create Dockerfile.dev for both frontend and backend.
+# - Frontend Dockerfile: Copy package.json, run npm install, expose port, set CMD for dev server.
+# - Backend Dockerfile: Copy requirements.txt, run pip install, expose port, set CMD for uvicorn.
+# - Consider adding a database service if local testing against Postgres is desired.
+# - For production, create Dockerfile (optimized for smaller size, security) and potentially a
+#   separate docker-compose.prod.yml or override file.
