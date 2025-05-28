@@ -1,5 +1,7 @@
 from typing import Optional, Tuple
 import os
+import json # Added json import
+from pydantic import BaseModel, Field
 
 # Attempt to import ADK components. Handle gracefully if not available.
 try:
@@ -11,7 +13,15 @@ except ImportError:
     ADK_AVAILABLE = False
     # Define dummy classes if ADK is not available, so the rest of the file can still be parsed
     # and the API can run with a clear indication that the ADK part is non-functional.
-    class LlmAgent:
+
+# --- Pydantic Model for Structured Agent Response ---
+class AgentStructuredResponse(BaseModel):
+    message: str = Field(description="The chat message response from the AI agent.")
+    require_form_after_message: bool = Field(
+        description="Indicates if the frontend should suggest or display a contact form after this message."
+    )
+
+class LlmAgent:
         def __init__(self, *args, **kwargs):
             print("WARNING: google-adk-python not installed. AI Agent will not function.")
             pass
@@ -35,19 +45,36 @@ except ImportError:
 GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash-latest")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") # ADK might use this if provided
 
+# Generate JSON schema string for the agent's structured response
+AGENT_RESPONSE_JSON_SCHEMA = json.dumps(AgentStructuredResponse.model_json_schema(), indent=2)
+
 if ADK_AVAILABLE:
     chat_agent = LlmAgent(
-        name="simple_chat_agent",
+        name="structured_chat_agent", # Renamed for clarity
         model=GEMINI_MODEL_NAME,
-        instruction="You are a friendly and helpful chatbot. Respond concisely.",
-        # If GOOGLE_API_KEY is set, ADK's underlying client might pick it up.
-        # Alternatively, ensure ADC is configured in the environment where this runs.
+        instruction=f"""You are a highly intelligent and helpful AI assistant for 'Contact Form Widget Corp'.
+Your primary role is to answer user questions about our company, our innovative contact form widgets, related whitepapers, and product information.
+You MUST always respond with a JSON object that strictly adheres to the following JSON schema:
+```json
+{AGENT_RESPONSE_JSON_SCHEMA}
+```
+
+Here's how to determine the values for the JSON fields:
+- `message`: This field should contain your textual response to the user. Be helpful, concise, and informative.
+- `require_form_after_message`: This boolean field determines if the user should be prompted with a contact form or a specific call to action after your message.
+    - Set this to `true` if the conversation indicates a strong user interest in our products or services, if they are asking for quotes, detailed product comparisons, or if they seem like a qualified lead ready for the next step. For example, if they ask 'How can I get this widget for my site?' or 'Can you tell me the pricing for enterprise users?'.
+    - When setting to `true`, the `message` field should naturally lead to this suggestion. For example: 'That's a great question! For detailed pricing and to discuss your specific needs, I recommend reaching out to our sales team. Would you like me to show you a form to contact them?' or 'Our 'Pro Widget X' seems like a perfect fit for your requirements. You can find more details and a purchase link here: [link]. I can also help you get in touch with our team if you'd like.'
+    - In all other cases, or if you are unsure, set `require_form_after_message` to `false`. This includes general inquiries, requests for information you can provide directly, or if the user is not yet showing strong buying signals.
+You are an expert in our products and aim to guide users effectively.
+""",
+        output_schema=AgentStructuredResponse, # Pass the Pydantic model here
+        # tools=[] # Explicitly no tools, as output_schema disables them
     )
     agent_runner = InMemoryRunner(agent=chat_agent)
 else:
-    # Provide dummy initializations if ADK is not available
-    chat_agent = LlmAgent() # This will print the warning
-    agent_runner = InMemoryRunner(agent=chat_agent)
+    # Define dummy chat_agent and agent_runner if ADK is not available
+    chat_agent = None # type: ignore
+    agent_runner = None # type: ignore
 
 
 def get_chat_response(message: str, session_id: Optional[str] = None) -> Tuple[str, Optional[str], bool]:
@@ -56,26 +83,35 @@ def get_chat_response(message: str, session_id: Optional[str] = None) -> Tuple[s
     Returns:
         Tuple[str, Optional[str], bool]: (reply_message, session_id, require_form_flag)
     """
-    if not ADK_AVAILABLE:
-        return "AI Agent is not available (google-adk-python not installed).", session_id, False
+    if not ADK_AVAILABLE or agent_runner is None: # Check agent_runner as well
+        return "AI Agent is not available (google-adk-python not installed or agent_runner is None).", session_id, False
 
     try:
         # Run the agent with the user's message
         event: Event = agent_runner.run(request=message, session_id=session_id)
 
         reply = "[No response from agent or empty response]"
+        require_form = False # Default value
         response_session_id = session_id # Default to passed-in session_id
 
         if event.error_message:
             reply = f"[Agent Error: {event.error_message}]"
         elif event.actions and event.actions[0].parts:
             action_part = event.actions[0].parts[0]
-            if hasattr(action_part, 'text') and action_part.text is not None:
-                reply = action_part.text
-            elif hasattr(action_part, 'code') and action_part.code is not None: # Example for code part
-                reply = f"[Agent produced code: {action_part.code.code}]"
+            # Assuming the agent now returns JSON in the 'text' field of the first part
+            if hasattr(action_part, 'text') and action_part.text:
+                try:
+                    structured_response_data = json.loads(action_part.text)
+                    # Validate with Pydantic model (optional but good practice)
+                    parsed_response = AgentStructuredResponse(**structured_response_data)
+                    reply = parsed_response.message
+                    require_form = parsed_response.require_form_after_message
+                except json.JSONDecodeError:
+                    reply = "[Agent Error: Failed to decode JSON response]"
+                except Exception as pydantic_error: # Catch Pydantic validation errors
+                    reply = f"[Agent Error: Invalid JSON structure: {pydantic_error}]"
             else:
-                reply = "[Agent produced a non-text/non-code response]"
+                reply = "[Agent produced no actionable text output]"
         
         # Prefer session_id from the event if available and different
         if hasattr(event, 'session_id') and event.session_id:
@@ -86,8 +122,9 @@ def get_chat_response(message: str, session_id: Optional[str] = None) -> Tuple[s
         print(f"Error communicating with AI Agent: {e}") # Simple print for now
         reply = f"[Error communicating with AI Agent: {str(e)}]"
         response_session_id = session_id
+        require_form = False # Ensure require_form is always returned
 
-    return reply, response_session_id, False
+    return reply, response_session_id, require_form
 
 # Example of how you might test this function directly (requires ADK and auth)
 if __name__ == '__main__':
