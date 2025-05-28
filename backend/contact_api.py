@@ -38,6 +38,7 @@ class ChatMessage(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     session_id: Optional[str] = None
+    require_form_after_message: bool = False # New field
 
 # --- API Endpoints ---
 
@@ -50,13 +51,17 @@ async def handle_form_submission(payload: ContactFormPayload):
 async def handle_chat(payload: ChatMessage):
     logger.info(f"Received chat message: '{payload.message}', session_id: {payload.session_id}")
     
-    # Call the placeholder function in ai_agent.py
-    agent_reply, response_session_id = ai_agent.get_chat_response(
+    # Call the ai_agent.py function which now returns three values
+    agent_reply, response_session_id, require_form = ai_agent.get_chat_response(
         message=payload.message, 
         session_id=payload.session_id
     )
     
-    return ChatResponse(reply=agent_reply, session_id=response_session_id)
+    return ChatResponse(
+        reply=agent_reply, 
+        session_id=response_session_id,
+        require_form_after_message=require_form # Pass the value from the agent
+    )
 
 @app.get("/")
 async def read_root():

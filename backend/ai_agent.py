@@ -50,12 +50,14 @@ else:
     agent_runner = InMemoryRunner(agent=chat_agent)
 
 
-def get_chat_response(message: str, session_id: Optional[str] = None) -> Tuple[str, Optional[str]]:
+def get_chat_response(message: str, session_id: Optional[str] = None) -> Tuple[str, Optional[str], bool]:
     """
     Gets a chat response from the AI agent.
+    Returns:
+        Tuple[str, Optional[str], bool]: (reply_message, session_id, require_form_flag)
     """
     if not ADK_AVAILABLE:
-        return "AI Agent is not available (google-adk-python not installed).", session_id
+        return "AI Agent is not available (google-adk-python not installed).", session_id, False
 
     try:
         # Run the agent with the user's message
@@ -85,7 +87,7 @@ def get_chat_response(message: str, session_id: Optional[str] = None) -> Tuple[s
         reply = f"[Error communicating with AI Agent: {str(e)}]"
         response_session_id = session_id
 
-    return reply, response_session_id
+    return reply, response_session_id, False
 
 # Example of how you might test this function directly (requires ADK and auth)
 if __name__ == '__main__':
@@ -96,24 +98,27 @@ if __name__ == '__main__':
         test_session_id = "local_test_session_123"
         
         print(f"\nSending message: '{test_message}' with session_id: '{test_session_id}'")
-        reply_text, returned_session_id = get_chat_response(test_message, test_session_id)
+        reply_text, returned_session_id, require_form = get_chat_response(test_message, test_session_id)
         print(f"  Agent Reply: {reply_text}")
         print(f"  Returned Session ID: {returned_session_id}")
+        print(f"  Require Form: {require_form}")
 
         # Test 2: Message without session_id
         test_message_2 = "What's the weather like?"
         print(f"\nSending message: '{test_message_2}' with no session_id")
-        reply_text_2, returned_session_id_2 = get_chat_response(test_message_2)
+        reply_text_2, returned_session_id_2, require_form_2 = get_chat_response(test_message_2)
         print(f"  Agent Reply: {reply_text_2}")
         print(f"  Returned Session ID: {returned_session_id_2}")
+        print(f"  Require Form: {require_form_2}")
         
         # Test 3: Potentially problematic (empty message, though ADK might handle it)
         # test_message_3 = ""
         # print(f"\nSending message: '{test_message_3}'")
-        # reply_text_3, returned_session_id_3 = get_chat_response(test_message_3)
+        # reply_text_3, returned_session_id_3, require_form_3 = get_chat_response(test_message_3)
         # print(f"  Agent Reply: {reply_text_3}")
         # print(f"  Returned Session ID: {returned_session_id_3}")
+        # print(f"  Require Form: {require_form_3}")
     else:
         print("ADK not available, cannot run local test.")
-        reply, sid = get_chat_response("test message if ADK not installed")
-        print(f"Reply when ADK not installed: '{reply}', Session ID: {sid}")
+        reply, sid, req_form = get_chat_response("test message if ADK not installed")
+        print(f"Reply when ADK not installed: '{reply}', Session ID: {sid}, Require Form: {req_form}")
