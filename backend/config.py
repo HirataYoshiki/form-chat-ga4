@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     supabase_url: Optional[str] = None
     supabase_service_role_key: Optional[str] = None
 
+    # AI Agent Retry Settings
+    ai_agent_retry_attempts: int = 3
+    ai_agent_retry_wait_initial_seconds: int = 1
+    ai_agent_retry_wait_max_seconds: int = 10
+    ai_agent_retry_wait_multiplier: int = 2
+
     # Configuration for loading from .env file
     # This uses Pydantic V2 (pydantic-settings) style.
     # For Pydantic V1, you would use:
