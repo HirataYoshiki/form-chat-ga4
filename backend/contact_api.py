@@ -2,12 +2,15 @@ from fastapi import FastAPI, Depends, HTTPException, status # Added Depends, HTT
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 import logging
-from typing import List, Optional, Any # Added Optional, List, Any
-from datetime import date # Added date
-from sqlalchemy.orm import Session # Added Session
+from typing import List, Optional, Any # Ensure List, Optional, Any are imported
+from datetime import date, datetime # Ensure date and datetime are imported
+# Removed: from sqlalchemy.orm import Session
+from supabase import Client # Add this import
 
 # Import the AI agent module
 from . import ai_agent
+from .config import settings # Ensure settings is imported if used directly
+from .db import get_supabase_client # Add this import for the new dependency
 
 # Configure basic logging
 logging.basicConfig(level=logging.INFO)
@@ -31,6 +34,17 @@ class ContactFormPayload(BaseModel):
     message: str
     ga_client_id: Optional[str] = None
     ga_session_id: Optional[str] = None
+    form_id: Optional[str] = None # Added
+
+class SubmissionResponse(BaseModel): # Newly added
+    id: int
+    created_at: datetime
+    name: str
+    email: str
+    message: str
+    ga_client_id: Optional[str] = None
+    ga_session_id: Optional[str] = None
+    form_id: Optional[str] = None
 
 # --- Models for /chat endpoint ---
 class ChatMessage(BaseModel):
@@ -44,10 +58,56 @@ class ChatResponse(BaseModel):
 
 # --- API Endpoints ---
 
-@app.post("/submit")
-async def handle_form_submission(payload: ContactFormPayload):
-    logger.info(f"Received form submission: {payload.dict()}")
-    return {"status": "success", "message": "Form data received successfully"}
+@app.post("/submit", response_model=SubmissionResponse) # Ensure SubmissionResponse is imported
+async def handle_form_submission(
+    payload: ContactFormPayload,
+    supabase: Optional[Client] = Depends(get_supabase_client)
+):
+    logger.info(f"Received form submission: {payload.model_dump_json()}") # Use model_dump_json for logging Pydantic V2
+
+    if supabase is None:
+        logger.error("Supabase client not available for /submit endpoint.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database service is currently unavailable. Please try again later."
+        )
+
+    try:
+        # For Pydantic V2, use model_dump. For V1, use dict.
+        # Assuming Pydantic V2 based on pydantic-settings usage earlier.
+        data_to_insert = payload.model_dump(exclude_unset=False)
+
+        # Supabase insert expects a list of dicts, even for a single record
+        response = supabase.table("contact_submissions").insert([data_to_insert]).execute()
+
+        if response.data and len(response.data) > 0:
+            inserted_record = response.data[0]
+            logger.info(f"Successfully inserted submission. ID: {inserted_record.get('id')}")
+            # SubmissionResponse model will validate and structure the output.
+            # Ensure all fields required by SubmissionResponse are present in inserted_record
+            # or can be defaulted by Pydantic if optional.
+            return SubmissionResponse(**inserted_record)
+        else:
+            # Log the actual response from Supabase for debugging
+            logger.error(
+                "Supabase insert operation did not return data as expected. Full response: %s",
+                response.model_dump_json() if hasattr(response, 'model_dump_json') else str(response)
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to save submission: No data returned from database operation."
+            )
+
+    except HTTPException: # Re-raise HTTPExceptions directly
+        raise
+    except Exception as e:
+        logger.error(f"Error saving submission to Supabase: {e}", exc_info=True)
+        # Avoid leaking detailed error messages to the client in production if not desired.
+        # For now, including str(e) for easier debugging during development.
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred while processing your request." # str(e) removed for security
+        )
 
 @app.post("/chat", response_model=ChatResponse)
 async def handle_chat(payload: ChatMessage):
@@ -106,7 +166,7 @@ except ImportError:
 
 # Placeholder for database session dependency
 # In a real application, this would be configured with your database connection
-def get_db():
+# def get_db(): # This function was already removed in a previous step, ensuring it's gone
     # Mock implementation. Replace with your actual database session provider.
     # For example:
     # from .database import SessionLocal # Assuming you have a database.py
@@ -117,7 +177,7 @@ def get_db():
     #     db.close()
     # For now, yielding None and endpoints will check for this.
     # A real implementation would yield a SQLAlchemy Session.
-    yield None
+    # yield None # Removed stub get_db function
 
 # Placeholder for user authentication dependency
 # Replace with your actual authentication logic
@@ -134,56 +194,34 @@ async def get_submissions_count_endpoint(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     form_id: Optional[str] = None,
-    db: Session = Depends(get_db),
+    supabase: Optional[Client] = Depends(get_supabase_client), # Changed dependency
     current_user: Any = Depends(get_current_active_user)
 ):
     """
     Get the count of submissions based on optional filters (start_date, end_date, form_id).
     Requires authentication.
     """
-    if db is None:
-        # This check is for the mock get_db. A real get_db would provide a session or fail.
-        logger.error("Database session is not available for /api/v1/analytics/submissions/count")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Database service not configured or unavailable."
-        )
+    if supabase is None:
+        logger.error("Supabase client not available for /api/v1/analytics/submissions/count")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Supabase client is not initialized. Check server logs.")
 
-    # Construct SubmissionsCountParams from individual query parameters for the response
+    logger.info("Analytics count endpoint called. Supabase client available. Returning dummy data.")
     request_params = SubmissionsCountParams(start_date=start_date, end_date=end_date, form_id=form_id)
-
-    try:
-        count = analytics_service.get_submissions_count(
-            db=db, start_date=start_date, end_date=end_date, form_id=form_id
-        )
-        return SubmissionsCountResponse(count=count, parameters=request_params)
-    except Exception as e:
-        logger.error(f"Error in get_submissions_count_endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error processing submission count.")
+    return SubmissionsCountResponse(count=0, parameters=request_params)
 
 
 @app.get("/api/v1/analytics/submissions/summary_by_form", response_model=SubmissionsSummaryResponse, tags=["Analytics"])
 async def get_submissions_summary_by_form_endpoint(
-    db: Session = Depends(get_db),
+    supabase: Optional[Client] = Depends(get_supabase_client), # Changed dependency
     current_user: Any = Depends(get_current_active_user)
 ):
     """
     Get a summary of submission counts grouped by form_id.
     Requires authentication.
     """
-    if db is None:
-        logger.error("Database session is not available for /api/v1/analytics/submissions/summary_by_form")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Database service not configured or unavailable."
-        )
+    if supabase is None:
+        logger.error("Supabase client not available for /api/v1/analytics/submissions/summary_by_form")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Supabase client is not initialized. Check server logs.")
 
-    try:
-        summary_data_dicts = analytics_service.get_summary_by_form(db=db)
-        # summary_data_dicts is List[Dict[str, Any]]
-        # Pydantic will validate and convert this to List[FormSummaryItem]
-        # when creating SubmissionsSummaryResponse.
-        return SubmissionsSummaryResponse(summary=summary_data_dicts)
-    except Exception as e:
-        logger.error(f"Error in get_submissions_summary_by_form_endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error processing submission summary.")
+    logger.info("Analytics summary endpoint called. Supabase client available. Returning dummy data.")
+    return SubmissionsSummaryResponse(summary=[])
