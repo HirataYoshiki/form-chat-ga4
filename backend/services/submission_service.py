@@ -1,8 +1,8 @@
 # backend/services/submission_service.py
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple, List # Added Tuple, List
 from supabase import Client
-# from datetime import datetime, timezone # Not manually updating updated_at in this version
+from datetime import date, time, datetime # Added date, time, datetime
 
 logger = logging.getLogger(__name__)
 CONTACT_SUBMISSIONS_TABLE = "contact_submissions"
@@ -60,3 +60,69 @@ async def update_submission_status(
     except Exception as e:
         logger.error(f"Exception updating submission status for id {submission_id}: {e}", exc_info=True)
         return None
+
+async def list_submissions( # Make it async as it might do I/O, even if Supabase client is sync
+    db: Client,
+    skip: int = 0,
+    limit: int = 20,
+    form_id: Optional[str] = None,
+    submission_status: Optional[str] = None,
+    email: Optional[str] = None,
+    name: Optional[str] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    sort_by: Optional[str] = "created_at", # Default sort
+    sort_order: Optional[str] = "desc",   # Default order
+) -> Tuple[List[Dict[str, Any]], int]:
+    """
+    Lists contact submissions with filtering, pagination, and sorting.
+    Returns a tuple of (list of submission records as dictionaries, total_count).
+    Note: The Supabase client's execute() method is synchronous. For true async
+    behavior in a FastAPI async endpoint, this should be run in a thread pool
+    (e.g., using fastapi.concurrency.run_in_threadpool).
+    """
+    try:
+        query = db.table(CONTACT_SUBMISSIONS_TABLE).select("*", count="exact")
+
+        # Apply filters
+        if form_id:
+            query = query.eq("form_id", form_id)
+        if submission_status:
+            query = query.eq("submission_status", submission_status)
+        if email:
+            query = query.ilike("email", f"%{email}%")
+        if name:
+            query = query.ilike("name", f"%{name}%")
+
+        if start_date:
+            # Combine with min time and convert to ISO format string for Supabase
+            start_datetime_iso = datetime.combine(start_date, time.min).isoformat()
+            query = query.gte("created_at", start_datetime_iso)
+        if end_date:
+            # Combine with max time and convert to ISO format string
+            end_datetime_iso = datetime.combine(end_date, time.max).isoformat()
+            query = query.lte("created_at", end_datetime_iso)
+
+        # Apply sorting
+        # Ensure sort_by is a valid column name to prevent injection-like issues if it were user-supplied without validation.
+        # Here, it's from a Query(enum=[...]) in the router, so it's relatively safe.
+        if sort_by and sort_order:
+            is_ascending = sort_order.lower() == "asc"
+            query = query.order(sort_by, desc=not is_ascending)
+
+        # Apply pagination
+        # Supabase range is inclusive for 'to', so skip + limit - 1
+        query = query.range(skip, skip + limit - 1)
+
+        # Execute the query (synchronous call)
+        response = query.execute()
+
+        submissions = response.data if response.data else []
+        total_count = response.count if response.count is not None else 0 # Get total count from 'exact'
+
+        logger.debug(f"Listed {len(submissions)} submissions (skip={skip}, limit={limit}) with total_count {total_count} matching criteria.")
+        return submissions, total_count
+
+    except Exception as e:
+        logger.error(f"Exception listing submissions with criteria (form_id={form_id}, status={submission_status}, etc.): {e}", exc_info=True)
+        return [], 0

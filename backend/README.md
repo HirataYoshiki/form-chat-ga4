@@ -212,7 +212,51 @@ backend/
         -   `422 Unprocessable Entity`: リクエストボディのバリデーションエラー。
         -   `500 Internal Server Error`: AIエージェント処理中のエラーなど。
 
-### 5.3. GA4設定管理 (GA4 Form Configurations)
+### 5.3. 問い合わせデータ一覧取得 (List Submissions)
+
+-   **`GET /api/v1/submissions`**
+    -   **説明**: 問い合わせデータの一覧を、指定されたフィルター条件、ページネーション、ソート順に基づいて取得します。
+    -   **認証**: 必要。
+    -   **クエリパラメータ**:
+        -   `form_id: Optional[str]` (フォームID)
+        -   `submission_status: Optional[str]` (ステータス)
+        -   `email: Optional[str]` (メールアドレス、部分一致)
+        -   `name: Optional[str]` (名前、部分一致)
+        -   `start_date: Optional[date]` (作成日範囲始点 YYYY-MM-DD)
+        -   `end_date: Optional[date]` (作成日範囲終点 YYYY-MM-DD)
+        -   `skip: int` (デフォルト `0`, 0以上)
+        -   `limit: int` (デフォルト `20`, 1以上100以下)
+        -   `sort_by: Optional[str]` (デフォルト `created_at`, Enum: `created_at`, `updated_at`, `name`, `submission_status`, `id`, `email`, `form_id`)
+        -   `sort_order: Optional[str]` (デフォルト `desc`, Enum: `asc`, `desc`)
+    -   **成功レスポンス例 (200 OK)**:
+        ```json
+        {
+          "submissions": [
+            {
+              "id": 123,
+              "created_at": "2024-03-15T10:30:00Z",
+              "name": "山田 太郎",
+              "email": "yamada.taro@example.com",
+              "message": "製品Aについて詳しく知りたいです。",
+              "ga_client_id": "GA1.2.123456789.1678901234",
+              "ga_session_id": "1678901234",
+              "form_id": "product_inquiry_form",
+              "submission_status": "new",
+              "status_change_reason": null,
+              "updated_at": "2024-03-15T10:30:00Z"
+            }
+          ],
+          "total_count": 1,
+          "skip": 0,
+          "limit": 20
+        }
+        ```
+    -   **主なエラーステータス**:
+        -   `422 Unprocessable Entity`: クエリパラメータのバリデーションエラー。
+        -   `503 Service Unavailable`: データベースクライアント未初期化など。
+        -   `500 Internal Server Error`: その他のサーバー内部エラー。
+
+### 5.4. GA4設定管理 (GA4 Form Configurations)
 
 これらのエンドポイントは、フォームごとのGA4測定IDとAPIシークレットを管理します。
 **認証**: 必要 (全てのGA4設定管理エンドポイント)
@@ -241,7 +285,7 @@ backend/
     -   **成功レスポンス (204 No Content)**。
     -   **主なエラーステータス**: `404 Not Found`。
 
-### 5.4. 問い合わせステータス更新 (Submission Status Update)
+### 5.5. 問い合わせステータス更新 (Submission Status Update)
 
 -   **`PATCH /api/v1/submissions/{submission_id}/status`**
     -   **説明**: 指定された問い合わせ (`submission_id`) のステータス (`submission_status`と任意で`status_change_reason`) を更新します。ステータス変更に応じて、GA4イベントが送信されます。
@@ -294,7 +338,7 @@ backend/
 
 ### 設定方法
 1.  **GA4プロパティでの準備**: GA4プロパティで「測定ID」と「APIシークレット」を取得します。
-2.  **バックエンドへの設定登録**: `/api/v1/ga_configurations` エンドポイント（「5.3. GA4設定管理」参照）を使用して、フォームごと (`form_id` 単位) に取得した測定IDとAPIシークレットを登録します。
+2.  **バックエンドへの設定登録**: `/api/v1/ga_configurations` エンドポイント（「5.4. GA4設定管理」参照）を使用して、フォームごと (`form_id` 単位) に取得した測定IDとAPIシークレットを登録します。
 
 ### 送信される主要イベント
 -   **`generate_lead`**:

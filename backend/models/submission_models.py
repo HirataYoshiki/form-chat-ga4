@@ -1,6 +1,7 @@
 # backend/models/submission_models.py
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List # Added List
+from backend.contact_api import SubmissionResponse # Added import
 
 class SubmissionStatusUpdatePayload(BaseModel):
     """
@@ -19,3 +20,14 @@ class SubmissionStatusUpdatePayload(BaseModel):
 # Note: The response for a status update will likely be the full updated submission,
 # which can reuse the existing `SubmissionResponse` model defined in `backend.contact_api`.
 # Therefore, a specific response model for status updates might not be needed here.
+
+
+class SubmissionListResponse(BaseModel):
+    """
+    Response model for listing contact submissions.
+    Contains a list of submission records and pagination details.
+    """
+    submissions: List[SubmissionResponse]
+    total_count: int = Field(..., description="Total number of submissions matching the filter criteria.")
+    skip: int = Field(..., ge=0, description="Number of records skipped (offset).")
+    limit: int = Field(..., ge=1, description="Maximum number of records returned in this response.")
