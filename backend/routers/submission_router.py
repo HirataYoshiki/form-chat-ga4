@@ -1,12 +1,13 @@
 # backend/routers/submission_router.py
 import logging
-from fastapi import APIRouter, Depends, HTTPException, status, Path
-from typing import Optional, Any, Dict
+from fastapi import APIRouter, Depends, HTTPException, status, Path, Query # Added Query
+from typing import Optional, Any, Dict, List # Added List
+from datetime import date # Added date
 from supabase import Client
 
 from backend.db import get_supabase_client
-from backend.models.submission_models import SubmissionStatusUpdatePayload
-from backend.contact_api import SubmissionResponse # Reusing existing model from contact_api
+from backend.models.submission_models import SubmissionStatusUpdatePayload, SubmissionListResponse # Added SubmissionListResponse
+from backend.contact_api import SubmissionResponse as SubmissionItemResponse # Reusing existing model from contact_api and aliasing
 
 # Import services
 from backend.services import submission_service
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/api/v1/submissions",
-    tags=["Submission Status Management"], # New Tag
+    tags=["Submission Status Management"],
     dependencies=[Depends(get_current_active_user)]
 )
 
@@ -41,7 +42,7 @@ STATUS_TO_GA4_EVENT_MAP: Dict[str, Dict[str, Any]] = {
 
 CONTACT_SUBMISSIONS_TABLE = "contact_submissions" # Define table name constant
 
-@router.patch("/{submission_id}/status", response_model=SubmissionResponse)
+@router.patch("/{submission_id}/status", response_model=SubmissionItemResponse) # Use alias for clarity if needed, or SubmissionResponse
 async def update_submission_status_endpoint(
     submission_id: int = Path(..., title="The ID of the submission to update", ge=1),
     payload: SubmissionStatusUpdatePayload,
@@ -65,9 +66,6 @@ async def update_submission_status_endpoint(
 
     except Exception as e_fetch: # Catch potential errors from .single() if not found, or other DB errors
         logger.error(f"Failed to fetch submission {submission_id} before status update: {e_fetch}", exc_info=True)
-        # Check if it's a "not found" type error from Supabase if possible, otherwise generic 500
-        # For now, a generic 500, or rely on .single() raising a specific exception to be caught.
-        # If .single() returns no data without error, the check above handles it.
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to retrieve submission details for id {submission_id}.")
 
     # 2. Update the submission status
@@ -79,7 +77,6 @@ async def update_submission_status_endpoint(
     )
 
     if not updated_submission_dict:
-        # This implies record not found by service, or DB error during update
         logger.error(f"Update_submission_status service failed for submission_id: {submission_id}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Failed to update submission status for id {submission_id}, record may not exist or update failed.")
 
@@ -89,8 +86,6 @@ async def update_submission_status_endpoint(
         ga_client_id = current_submission.get("ga_client_id")
 
         if form_id and ga_client_id:
-            # Fetch GA4 config (API Secret, Measurement ID) for the form_id
-            # Assuming form_ga_config_service.get_ga_configuration is synchronous
             ga_config_dict = form_ga_config_service.get_ga_configuration(supabase, form_id)
 
             if ga_config_dict:
@@ -101,11 +96,10 @@ async def update_submission_status_endpoint(
                     event_config = STATUS_TO_GA4_EVENT_MAP[payload.new_status]
                     event_params = {**event_config["params_template"]}
 
-                    event_params["value"] = 0  # Added
-                    event_params["currency"] = "JPY" # Added
+                    event_params["value"] = 0
+                    event_params["currency"] = "JPY"
 
-                    # Add common and dynamic params
-                    event_params["form_id"] = form_id # Add form_id to all mapped events
+                    event_params["form_id"] = form_id
                     if current_submission.get("ga_session_id"):
                         event_params["session_id"] = current_submission.get("ga_session_id")
                     if payload.new_status == "converted":
@@ -117,15 +111,13 @@ async def update_submission_status_endpoint(
                         f"Attempting to send GA4 event '{ga4_event_payload['name']}' for submission_id: {submission_id}, new_status: {payload.new_status}"
                     )
                     try:
-                        # send_ga4_event is async
                         await ga4_mp_service.send_ga4_event(
                             api_secret=api_secret,
                             measurement_id=measurement_id,
                             client_id=ga_client_id,
                             events=[ga4_event_payload]
                         )
-                        # Success/failure logging is within send_ga4_event
-                    except Exception as e_ga: # Catch any unexpected error during the await
+                    except Exception as e_ga:
                         logger.error(
                             f"Unhandled error when trying to send GA4 event for submission_id {submission_id} (status {payload.new_status}): {e_ga}",
                             exc_info=True
@@ -137,4 +129,50 @@ async def update_submission_status_endpoint(
         else:
             logger.info(f"Skipping GA4 '{payload.new_status}' event: form_id or ga_client_id missing for submission {submission_id}.")
 
-    return SubmissionResponse(**updated_submission_dict)
+    return SubmissionItemResponse(**updated_submission_dict)
+
+
+@router.get("", response_model=SubmissionListResponse, tags=["Submissions Data"])
+async def list_submissions_endpoint(
+    form_id: Optional[str] = Query(None, description="Filter by form_id."),
+    submission_status: Optional[str] = Query(None, description="Filter by submission status."),
+    email: Optional[str] = Query(None, description="Filter by email (case-insensitive, partial match)."),
+    name: Optional[str] = Query(None, description="Filter by name (case-insensitive, partial match)."),
+    start_date: Optional[date] = Query(None, description="Filter by creation date (start of range, YYYY-MM-DD)."),
+    end_date: Optional[date] = Query(None, description="Filter by creation date (end of range, YYYY-MM-DD)."),
+    skip: int = Query(0, ge=0, description="Number of records to skip."),
+    limit: int = Query(20, ge=1, le=100, description="Maximum number of records to return."),
+    sort_by: Optional[str] = Query("created_at", enum=["created_at", "updated_at", "name", "submission_status", "id", "email", "form_id"], description="Column to sort by."),
+    sort_order: Optional[str] = Query("desc", enum=["asc", "desc"], description="Sort order (asc or desc)."),
+    supabase: Client = Depends(get_supabase_client)
+):
+    if supabase is None:
+        logger.error("Supabase client unavailable for GET /api/v1/submissions")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Supabase client unavailable")
+
+    try:
+        submissions_list_dicts, total_count = await submission_service.list_submissions(
+            db=supabase,
+            skip=skip,
+            limit=limit,
+            form_id=form_id,
+            submission_status=submission_status,
+            email=email,
+            name=name,
+            start_date=start_date,
+            end_date=end_date,
+            sort_by=sort_by,
+            sort_order=sort_order
+        )
+
+        parsed_submissions = [SubmissionItemResponse(**item) for item in submissions_list_dicts]
+
+        return SubmissionListResponse(
+            submissions=parsed_submissions,
+            total_count=total_count,
+            skip=skip,
+            limit=limit
+        )
+    except Exception as e:
+        logger.error(f"Error listing submissions: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to list submissions.")

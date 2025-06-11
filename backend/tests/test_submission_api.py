@@ -2,7 +2,7 @@
 import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import MagicMock, patch, ANY as AnyMockValue
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date # Ensure date is imported
 from typing import Optional, Dict, Any, List
 
 # Attempt to import app and other necessary components
@@ -186,3 +186,111 @@ def test_update_status_ga4_config_not_found_skips_ga_event(
     assert response.json()["submission_status"] == new_status
     mock_send_ga4_event.assert_not_called() # GA4 event should not be sent
     mock_get_ga_config.assert_called_once_with(mock_supabase_instance, current_submission["form_id"])
+
+# --- Test Cases for GET /api/v1/submissions ---
+
+@patch("backend.routers.submission_router.get_current_active_user", return_value=MOCK_AUTH_USER)
+@patch("backend.routers.submission_router.get_supabase_client")
+@patch("backend.services.submission_service.list_submissions")
+def test_list_submissions_success_no_filters(mock_list_svc, mock_get_supabase_dep, mock_auth_dep, client): # Renamed mock args
+    mock_supabase_instance = MagicMock(name="supabase_mock_list_no_filter")
+    mock_get_supabase_dep.return_value = mock_supabase_instance
+
+    mock_data = [
+        helper_mock_submission_dict(submission_id=101, form_id="formA"),
+        helper_mock_submission_dict(submission_id=102, form_id="formB"),
+    ]
+    mock_total = 50 # Example total count larger than returned items for pagination
+    mock_list_svc.return_value = (mock_data, mock_total)
+
+    response = client.get(f"{SUBMISSIONS_API_BASE_PATH}/") # Ensure trailing slash for query params
+
+    assert response.status_code == 200
+    json_response = response.json()
+    assert len(json_response["submissions"]) == 2
+    assert json_response["total_count"] == mock_total
+    assert json_response["skip"] == 0 # Default skip
+    assert json_response["limit"] == 20 # Default limit
+    assert json_response["submissions"][0]["id"] == 101
+
+    mock_list_svc.assert_called_once_with(
+        db=mock_supabase_instance,
+        skip=0, limit=20,
+        form_id=None, submission_status=None, email=None, name=None,
+        start_date=None, end_date=None,
+        sort_by="created_at", sort_order="desc" # Default sort params
+    )
+
+@patch("backend.routers.submission_router.get_current_active_user", return_value=MOCK_AUTH_USER)
+@patch("backend.routers.submission_router.get_supabase_client")
+@patch("backend.services.submission_service.list_submissions")
+def test_list_submissions_with_all_filters_pagination_sorting(mock_list_svc, mock_get_supabase_dep, mock_auth_dep, client):
+    mock_supabase_instance = MagicMock(name="supabase_mock_list_filters")
+    mock_get_supabase_dep.return_value = mock_supabase_instance
+
+    mock_data = [helper_mock_submission_dict(submission_id=201, form_id="form-filter")]
+    mock_total = 1
+    mock_list_svc.return_value = (mock_data, mock_total)
+
+    params = {
+        "form_id": "form-filter", "submission_status": "converted",
+        "email": "filter@example.com", "name": "Filter User",
+        "start_date": "2024-01-01", "end_date": "2024-01-31",
+        "skip": 10, "limit": 5,
+        "sort_by": "name", "sort_order": "asc"
+    }
+    response = client.get(f"{SUBMISSIONS_API_BASE_PATH}/", params=params)
+
+    assert response.status_code == 200
+    json_response = response.json()
+    assert len(json_response["submissions"]) == 1
+    assert json_response["total_count"] == mock_total
+    assert json_response["skip"] == 10
+    assert json_response["limit"] == 5
+    assert json_response["submissions"][0]["id"] == 201
+
+    # FastAPI Query converts date strings to date objects
+    # from datetime import date as date_type # For type checking in assert (already imported at top)
+    mock_list_svc.assert_called_once_with(
+        db=mock_supabase_instance,
+        skip=10, limit=5,
+        form_id="form-filter", submission_status="converted",
+        email="filter@example.com", name="Filter User",
+        start_date=date(2024,1,1), end_date=date(2024,1,31),
+        sort_by="name", sort_order="asc"
+    )
+
+@patch("backend.routers.submission_router.get_current_active_user", return_value=MOCK_AUTH_USER)
+@patch("backend.routers.submission_router.get_supabase_client")
+@patch("backend.services.submission_service.list_submissions")
+def test_list_submissions_empty_result_from_service(mock_list_svc, mock_get_supabase_dep, mock_auth_dep, client):
+    mock_supabase_instance = MagicMock(name="supabase_mock_list_empty")
+    mock_get_supabase_dep.return_value = mock_supabase_instance
+    mock_list_svc.return_value = ([], 0) # Service returns empty list and 0 total
+
+    response = client.get(f"{SUBMISSIONS_API_BASE_PATH}/")
+    assert response.status_code == 200
+    json_response = response.json()
+    assert len(json_response["submissions"]) == 0
+    assert json_response["total_count"] == 0
+
+@patch("backend.routers.submission_router.get_current_active_user", return_value=MOCK_AUTH_USER)
+@patch("backend.routers.submission_router.get_supabase_client")
+def test_list_submissions_supabase_client_is_none(mock_get_supabase_dep, mock_auth_dep, client):
+    mock_get_supabase_dep.return_value = None # Simulate Supabase client not available
+
+    response = client.get(f"{SUBMISSIONS_API_BASE_PATH}/")
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Supabase client unavailable" # Match error detail
+
+@patch("backend.routers.submission_router.get_current_active_user", return_value=MOCK_AUTH_USER)
+@patch("backend.routers.submission_router.get_supabase_client")
+@patch("backend.services.submission_service.list_submissions")
+def test_list_submissions_service_raises_exception(mock_list_svc, mock_get_supabase_dep, mock_auth_dep, client):
+    mock_supabase_instance = MagicMock(name="supabase_mock_list_svc_error")
+    mock_get_supabase_dep.return_value = mock_supabase_instance
+    mock_list_svc.side_effect = Exception("Simulated service error")
+
+    response = client.get(f"{SUBMISSIONS_API_BASE_PATH}/")
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Failed to list submissions."
