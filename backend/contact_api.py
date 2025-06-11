@@ -103,6 +103,9 @@ async def handle_form_submission(
                             if payload.ga_session_id:
                                 event_params["session_id"] = payload.ga_session_id
 
+                            event_params["value"] = 0  # Added
+                            event_params["currency"] = "JPY" # Added
+
                             ga4_event = {"name": "generate_lead", "params": event_params}
 
                             logger.info(f"Attempting to send generate_lead event to GA4 for form_id: {payload.form_id}, client_id: {payload.ga_client_id}")

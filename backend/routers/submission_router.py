@@ -99,7 +99,10 @@ async def update_submission_status_endpoint(
 
                 if api_secret and measurement_id:
                     event_config = STATUS_TO_GA4_EVENT_MAP[payload.new_status]
-                    event_params = {**event_config["params_template"]} # Start with template params
+                    event_params = {**event_config["params_template"]}
+
+                    event_params["value"] = 0  # Added
+                    event_params["currency"] = "JPY" # Added
 
                     # Add common and dynamic params
                     event_params["form_id"] = form_id # Add form_id to all mapped events
