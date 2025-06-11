@@ -13,6 +13,7 @@
 - 📧 **自動通知**: Slack・メール・自動返信に対応
 - 🛡️ **スタイル隔離**: Shadow DOMで既存サイトと干渉しない
 - 💾 **データ保存**: Supabase連携で確実にデータを保管
+- 📈 **GA4連携**: Google Analytics 4へのイベント送信（Measurement Protocol経由）に対応し、リード獲得状況や顧客エンゲージメントをトラッキング。
 - ⚡ **高速表示**: 最適化されたバンドルサイズ
 
 ## 🚀 クイックスタート
@@ -114,7 +115,13 @@ cd contact-form-widget
 
 ```bash
 cp .env.example .env
-# .envファイルを編集してAPI キーを設定
+# .envファイルを編集してSupabaseの接続情報やその他のAPIキーを設定
+# 例:
+# SUPABASE_URL="YOUR_SUPABASE_URL"
+# SUPABASE_SERVICE_ROLE_KEY="YOUR_SUPABASE_SERVICE_ROLE_KEY"
+# GEMINI_MODEL_NAME="gemini-1.5-flash-latest"
+# # GOOGLE_API_KEY="YOUR_GOOGLE_API_KEY" # (AI Agent用、ADCがなければ)
+# # GA4関連のAPIキーと測定IDは、API経由でフォームごとに設定します。
 ```
 
 ### 3. 開発環境を起動
@@ -134,24 +141,60 @@ docker-compose up --build
 - **バックエンドAPI**: http://localhost:8000
 - **API ドキュメント**: http://localhost:8000/docs
 
+## 🔗 APIエンドポイント概要
+
+主要なAPIエンドポイントは以下の通りです。詳細は `/docs` (Swagger UI) を参照してください。
+
+-   **`POST /submit`**:
+    -   お問い合わせフォームからのデータを受け付け、データベースに保存します。
+    -   保存成功後、GA4に `generate_lead` イベントを送信します（フォームにGA4設定がされている場合）。
+-   **`POST /chat`**:
+    -   AIチャットボットとの対話メッセージを処理します。
+-   **`POST /api/v1/ga_configurations`**:
+    -   新しいフォームに対するGA4設定（測定ID、APIシークレット等）を登録します。
+-   **`GET /api/v1/ga_configurations`**:
+    -   登録されている全てのフォームGA4設定をリストします。
+-   **`GET /api/v1/ga_configurations/{form_id}`**:
+    -   指定された `form_id` のGA4設定を取得します。
+-   **`PUT /api/v1/ga_configurations/{form_id}`**:
+    -   指定された `form_id` のGA4設定を更新します。
+-   **`DELETE /api/v1/ga_configurations/{form_id}`**:
+    -   指定された `form_id` のGA4設定を削除します。
+-   **`PATCH /api/v1/submissions/{submission_id}/status`**:
+    -   指定された問い合わせ (`submission_id`) のステータスを更新します。
+    -   ステータス変更に応じて、適切なイベントをGA4に送信します（フォームにGA4設定がされている場合）。
+
 ## 📁 プロジェクト構成
 
 ```
 contact-form-widget/
 ├── frontend/                          # React フロントエンド
-│   └── src/
-│       └── components/
-│           └── ContactFormWidget.tsx  # メインウィジェット
+│   └── src/ # ... (詳細は省略)
 ├── backend/
-│   └── contact_api.py                 # FastAPI バックエンド
+│   ├── routers/
+│   │   ├── form_ga_config_router.py   # GA4設定管理APIルーター
+│   │   └── submission_router.py       # 問い合わせステータス管理APIルーター
+│   ├── services/
+│   │   ├── form_ga_config_service.py  # GA4設定管理サービス
+│   │   ├── ga4_mp_service.py          # GA4 MPイベント送信サービス
+│   │   └── submission_service.py      # 問い合わせステータス管理サービス
+│   ├── models/
+│   │   ├── ga4_config_models.py       # GA4設定API用Pydanticモデル
+│   │   └── submission_models.py       # 問い合わせステータスAPI用Pydanticモデル
+│   ├── contact_api.py                 # FastAPIメインアプリケーション
+│   ├── ai_agent.py                    # AIチャットボットロジック
+│   ├── config.py                      # 環境変数・設定管理
+│   ├── db.py                          # Supabaseクライアント初期化
+│   └── requirements.txt               # Python依存関係
 ├── database/
-│   └── contact_form_schema.sql        # Supabaseスキーマ
-├── examples/
-│   ├── form_widget_loader.ts          # 埋め込みローダー
-│   └── usage_examples.html            # 使用例
-├── docker-compose.yml
-├── Makefile
-└── README.md
+│   ├── contact_form_schema.sql        # 問い合わせデータテーブルスキーマ
+│   └── form_ga_configurations_schema.sql # GA4設定テーブルスキーマ (Added)
+├── examples/                          # 各プラットフォームでの使用例
+│   ├── form_widget_loader.ts
+│   └── usage_examples.html
+├── docker-compose.yml                 # Docker Compose設定
+├── Makefile                           # 開発用Makefile
+└── README.md                          # 本ドキュメント
 ```
 
 ## 🛠️ 利用可能なコマンド
@@ -204,9 +247,14 @@ railway deploy
 
 ### 管理機能
 - [x] 送信データの保存
-- [x] 基本的な分析
+- [ ] データ分析 (GA4連携により高度な分析が可能)
 - [ ] 管理画面UI（開発中）
-- [ ] 詳細分析ダッシュボード（予定）
+- [ ] 詳細分析 (GA4を活用)
+
+### 📈 GA4連携機能
+- [x] フォーム送信時に `generate_lead` イベントをGA4に送信 (Measurement Protocol経由)
+- [x] 問い合わせステータス変更時に対応するGA4イベントを送信 (例: `working_lead`, `qualify_lead`, `close_convert_lead`)
+- [x] フォームごとのGA4測定ID・APIシークレット設定機能 (専用API経由で管理)
 
 
 

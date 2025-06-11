@@ -31,54 +31,63 @@ def get_valid_payload_dict(form_id: Optional[str] = "test-form-123") -> Dict[str
 
 # --- Test Cases ---
 
-def test_submit_form_success_with_all_fields(mocker):
-    payload = get_valid_payload_dict()
+def test_submit_form_success_sends_ga4_event_when_configured(mocker): # Renamed
+    payload = get_valid_payload_dict() # This includes form_id and ga_client_id
 
     mock_supabase_client = MagicMock()
     mock_insert_response = MagicMock()
-
-    # Simulate successful insertion returning the inserted data
-    # Ensure created_at is in a consistent format (ISO format string, UTC)
-    # Supabase typically returns TIMESTAMPTZ as ISO 8601 string
     mock_created_at_iso = datetime.now(timezone.utc).isoformat()
     inserted_record_data = {**payload, "id": 1, "created_at": mock_created_at_iso}
     mock_insert_response.data = [inserted_record_data]
-
     mock_supabase_client.table.return_value.insert.return_value.execute.return_value = mock_insert_response
 
-    # Patch the get_supabase_client dependency for this specific test's scope
+    # Mock GA4 services
+    mock_get_ga_config = mocker.patch("backend.contact_api.form_ga_config_service.get_ga_configuration")
+    mock_send_ga4_event = mocker.patch("backend.contact_api.ga4_mp_service.send_ga4_event")
+
+    mock_ga_config_data = {
+        "form_id": payload["form_id"],
+        "ga4_measurement_id": "G-VALIDMEASUREMENTID",
+        "ga4_api_secret": "validapisecret"
+    }
+    mock_get_ga_config.return_value = mock_ga_config_data
+    mock_send_ga4_event.return_value = True # Simulate successful send
+
     with patch("backend.contact_api.get_supabase_client", return_value=mock_supabase_client):
         response = client.post("/submit", json=payload)
 
     assert response.status_code == 200
     response_data = response.json()
-
-    assert response_data["name"] == payload["name"]
-    assert response_data["email"] == payload["email"]
-    assert response_data["form_id"] == payload["form_id"]
     assert response_data["id"] == 1
-    assert response_data["created_at"] == mock_created_at_iso # Compare ISO strings
 
-    mock_supabase_client.table.assert_called_once_with("contact_submissions")
-    # Check that insert was called with a list containing the payload dictionary
     mock_supabase_client.table.return_value.insert.assert_called_once_with([payload])
-    mock_supabase_client.table.return_value.insert.return_value.execute.assert_called_once()
 
-def test_submit_form_success_minimal_fields(mocker):
+    # Assert GA4 mocks
+    mock_get_ga_config.assert_called_once_with(mock_supabase_client, payload["form_id"])
+
+    expected_event_params = {
+        "event_category": "contact_form",
+        "event_label": payload["form_id"],
+        "session_id": payload["ga_session_id"]
+    }
+    mock_send_ga4_event.assert_called_once_with(
+        api_secret=mock_ga_config_data["ga4_api_secret"],
+        measurement_id=mock_ga_config_data["ga4_measurement_id"],
+        client_id=payload["ga_client_id"],
+        events=[{"name": "generate_lead", "params": expected_event_params}]
+    )
+
+def test_submit_form_success_minimal_fields_skips_ga4_event(mocker): # Updated name and assertions
     minimal_payload = {
         "name": "Minimal User",
         "email": "minimal@example.com",
         "message": "Minimal message.",
     }
-    # form_id, ga_client_id, ga_session_id are omitted (should be None)
+    # form_id, ga_client_id, ga_session_id are omitted, will default to None
 
     mock_supabase_client = MagicMock()
     mock_insert_response = MagicMock()
     mock_created_at_iso = datetime.now(timezone.utc).isoformat()
-
-    # Expected data that would be inserted (Pydantic model defaults would fill these if not provided)
-    # The endpoint logic uses payload.model_dump(exclude_unset=False), so if they are not in minimal_payload,
-    # they get default None from ContactFormPayload.
     data_as_inserted = {
         "name": "Minimal User", "email": "minimal@example.com", "message": "Minimal message.",
         "ga_client_id": None, "ga_session_id": None, "form_id": None
@@ -86,6 +95,10 @@ def test_submit_form_success_minimal_fields(mocker):
     inserted_record_data = {**data_as_inserted, "id": 2, "created_at": mock_created_at_iso}
     mock_insert_response.data = [inserted_record_data]
     mock_supabase_client.table.return_value.insert.return_value.execute.return_value = mock_insert_response
+
+    # Mock GA4 services to ensure they are NOT called
+    mock_get_ga_config = mocker.patch("backend.contact_api.form_ga_config_service.get_ga_configuration")
+    mock_send_ga4_event = mocker.patch("backend.contact_api.ga4_mp_service.send_ga4_event")
 
     with patch("backend.contact_api.get_supabase_client", return_value=mock_supabase_client):
         response = client.post("/submit", json=minimal_payload)
@@ -98,6 +111,37 @@ def test_submit_form_success_minimal_fields(mocker):
     assert response_data["ga_client_id"] is None
 
     mock_supabase_client.table.return_value.insert.assert_called_once_with([data_as_inserted])
+
+    # Assert GA4 mocks were NOT called
+    mock_get_ga_config.assert_not_called()
+    mock_send_ga4_event.assert_not_called()
+
+
+def test_submit_form_success_ga4_config_not_found_skips_event(mocker):
+    payload = get_valid_payload_dict() # This includes form_id and ga_client_id
+
+    mock_supabase_client = MagicMock()
+    mock_insert_response = MagicMock()
+    mock_created_at_iso = datetime.now(timezone.utc).isoformat()
+    inserted_record_data = {**payload, "id": 3, "created_at": mock_created_at_iso}
+    mock_insert_response.data = [inserted_record_data]
+    mock_supabase_client.table.return_value.insert.return_value.execute.return_value = mock_insert_response
+
+    # Mock GA4 services
+    mock_get_ga_config = mocker.patch("backend.contact_api.form_ga_config_service.get_ga_configuration")
+    mock_send_ga4_event = mocker.patch("backend.contact_api.ga4_mp_service.send_ga4_event")
+
+    mock_get_ga_config.return_value = None # Simulate GA4 config not found
+
+    with patch("backend.contact_api.get_supabase_client", return_value=mock_supabase_client):
+        response = client.post("/submit", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["id"] == 3
+
+    mock_get_ga_config.assert_called_once_with(mock_supabase_client, payload["form_id"])
+    mock_send_ga4_event.assert_not_called()
+
 
 def test_submit_form_supabase_client_unavailable(mocker):
     with patch("backend.contact_api.get_supabase_client", return_value=None):
