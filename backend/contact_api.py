@@ -11,6 +11,9 @@ from supabase import Client # Add this import
 from . import ai_agent
 from .config import settings # Ensure settings is imported if used directly
 from .db import get_supabase_client # Add this import for the new dependency
+from .routers import form_ga_config_router, submission_router # Added submission_router import
+from .services import form_ga_config_service # Added import
+from .services import ga4_mp_service # Added import
 
 # Configure basic logging
 logging.basicConfig(level=logging.INFO)
@@ -83,9 +86,44 @@ async def handle_form_submission(
         if response.data and len(response.data) > 0:
             inserted_record = response.data[0]
             logger.info(f"Successfully inserted submission. ID: {inserted_record.get('id')}")
-            # SubmissionResponse model will validate and structure the output.
-            # Ensure all fields required by SubmissionResponse are present in inserted_record
-            # or can be defaulted by Pydantic if optional.
+
+            # --- GA4 generate_lead イベント送信 ---
+            if payload.form_id and payload.ga_client_id:
+                try:
+                    ga_config_dict = form_ga_config_service.get_ga_configuration(supabase, payload.form_id)
+                    if ga_config_dict:
+                        api_secret = ga_config_dict.get("ga4_api_secret")
+                        measurement_id = ga_config_dict.get("ga4_measurement_id")
+
+                        if api_secret and measurement_id:
+                            event_params = {
+                                "event_category": "contact_form",
+                                "event_label": payload.form_id,
+                            }
+                            if payload.ga_session_id:
+                                event_params["session_id"] = payload.ga_session_id
+
+                            ga4_event = {"name": "generate_lead", "params": event_params}
+
+                            logger.info(f"Attempting to send generate_lead event to GA4 for form_id: {payload.form_id}, client_id: {payload.ga_client_id}")
+                            ga_sent_successfully = await ga4_mp_service.send_ga4_event(
+                                api_secret=api_secret,
+                                measurement_id=measurement_id,
+                                client_id=payload.ga_client_id,
+                                events=[ga4_event]
+                            )
+                            if not ga_sent_successfully:
+                                logger.warning(f"generate_lead event sending to GA4 may have failed for form_id: {payload.form_id} (see previous logs from ga4_mp_service).")
+                        else:
+                            logger.warning(f"GA4 API secret or Measurement ID missing in config for form_id '{payload.form_id}'. Cannot send generate_lead event.")
+                    else:
+                        logger.warning(f"GA4 configuration not found for form_id '{payload.form_id}'. Cannot send generate_lead event.")
+                except Exception as e_ga_setup: # Catch errors during GA config fetch or event construction
+                    logger.error(f"Error during GA4 event preparation for generate_lead (form_id: {payload.form_id}): {e_ga_setup}", exc_info=True)
+            else:
+                logger.info("Skipping GA4 generate_lead event: form_id or ga_client_id missing from payload for submission ID: %s.", inserted_record.get('id'))
+            # --- GA4 イベント送信ここまで ---
+
             return SubmissionResponse(**inserted_record)
         else:
             # Log the actual response from Supabase for debugging
@@ -140,30 +178,6 @@ async def read_root():
 #   "session_id": "user123_chat789"
 # }'
 
-# Assuming your services and models are structured in directories
-# These imports assume contact_api.py is in the 'backend' directory,
-# and 'services' and 'models' are subdirectories of 'backend'.
-try:
-    from .services import analytics_service
-    from .models.analytics_models import (
-        SubmissionsCountResponse,
-        SubmissionsCountParams, # This model is used in response construction
-        SubmissionsSummaryResponse,
-        FormSummaryItem # Used by SubmissionsSummaryResponse
-    )
-except ImportError:
-    # Fallback for cases where the subtask might run in a context
-    # where sibling imports don't work as expected.
-    # This is primarily for robustness of the subtask itself.
-    import analytics_service # type: ignore
-    from models.analytics_models import ( # type: ignore
-        SubmissionsCountResponse,
-        SubmissionsCountParams,
-        SubmissionsSummaryResponse,
-        FormSummaryItem
-    )
-
-
 # Placeholder for database session dependency
 # In a real application, this would be configured with your database connection
 # def get_db(): # This function was already removed in a previous step, ensuring it's gone
@@ -186,42 +200,8 @@ async def get_current_active_user() -> Any: # Added return type hint
     # To simulate a protected endpoint that currently doesn't authenticate properly:
     # raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     # For development, returning a dummy user or None to bypass actual auth.
+    # return {"username": "devuser", "permissions": ["view_analytics"]} # Keeping this for now, might be used by other parts or future tests
     return {"username": "devuser", "permissions": ["view_analytics"]}
 
-
-@app.get("/api/v1/analytics/submissions/count", response_model=SubmissionsCountResponse, tags=["Analytics"])
-async def get_submissions_count_endpoint(
-    start_date: Optional[date] = None,
-    end_date: Optional[date] = None,
-    form_id: Optional[str] = None,
-    supabase: Optional[Client] = Depends(get_supabase_client), # Changed dependency
-    current_user: Any = Depends(get_current_active_user)
-):
-    """
-    Get the count of submissions based on optional filters (start_date, end_date, form_id).
-    Requires authentication.
-    """
-    if supabase is None:
-        logger.error("Supabase client not available for /api/v1/analytics/submissions/count")
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Supabase client is not initialized. Check server logs.")
-
-    logger.info("Analytics count endpoint called. Supabase client available. Returning dummy data.")
-    request_params = SubmissionsCountParams(start_date=start_date, end_date=end_date, form_id=form_id)
-    return SubmissionsCountResponse(count=0, parameters=request_params)
-
-
-@app.get("/api/v1/analytics/submissions/summary_by_form", response_model=SubmissionsSummaryResponse, tags=["Analytics"])
-async def get_submissions_summary_by_form_endpoint(
-    supabase: Optional[Client] = Depends(get_supabase_client), # Changed dependency
-    current_user: Any = Depends(get_current_active_user)
-):
-    """
-    Get a summary of submission counts grouped by form_id.
-    Requires authentication.
-    """
-    if supabase is None:
-        logger.error("Supabase client not available for /api/v1/analytics/submissions/summary_by_form")
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Supabase client is not initialized. Check server logs.")
-
-    logger.info("Analytics summary endpoint called. Supabase client available. Returning dummy data.")
-    return SubmissionsSummaryResponse(summary=[])
+app.include_router(form_ga_config_router.router)
+app.include_router(submission_router.router) # Added line to include the new submission router
