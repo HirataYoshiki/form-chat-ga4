@@ -10,6 +10,10 @@ class Settings(BaseSettings):
     # Code using this setting should handle the case where it might be None.
     google_api_key: Optional[str] = None
 
+    # Supabase Connection Settings
+    supabase_url: Optional[str] = None
+    supabase_service_role_key: Optional[str] = None
+
     # Configuration for loading from .env file
     # This uses Pydantic V2 (pydantic-settings) style.
     # For Pydantic V1, you would use:
