@@ -26,6 +26,7 @@
 -   **データバリデーション**: Pydantic V2 - APIリクエスト/レスポンスの型定義とバリデーション。
 -   **HTTPクライアント**: `httpx` - GA4 Measurement Protocol APIなど、外部APIとの非同期通信に使用。
 -   **AI連携**: Google Agent Development Kit (ADK) - Geminiモデルを利用したAIエージェント機能。
+-   **リトライ処理**: tenacity - AI Agentなどの外部API呼び出しにおけるリトライ処理に使用。
 -   **ASGIサーバー**: Uvicorn - FastAPIアプリケーションの実行。
 -   **依存関係管理**: `pip` と `requirements.txt`。
 
@@ -54,7 +55,8 @@ backend/
 └── tests/                       # 自動テスト用ディレクトリ
     ├── test_contact_api.py      # /submit API (/chat APIは未実装) のテスト
     ├── test_form_ga_config_api.py # GA4設定管理APIのテスト
-    └── test_submission_api.py   # ステータス更新APIのテスト
+    ├── test_submission_api.py   # ステータス更新APIのテスト
+    └── test_ai_agent.py         # AI Agent関連ロジックのテスト (追加)
 ```
 
 -   **`contact_api.py`**: FastAPIアプリケーションのインスタンス (`app`) を生成し、ミドルウェアの設定、主要なエンドポイント（`/submit`, `/chat`）、および各機能ルーターの登録を行います。
@@ -107,8 +109,18 @@ backend/
         # AI Agent用 (オプション)
         # GEMINI_MODEL_NAME="gemini-1.5-flash-latest" # config.pyにデフォルト値あり
         # GOOGLE_API_KEY="YOUR_GOOGLE_API_KEY_IF_ADC_IS_NOT_SETUP"
+
+        # --- AI Agent Retry Settings (オプション、config.pyにデフォルト値あり) ---
+        # AI AgentのAPI呼び出しリトライ回数の最大値
+        # AI_AGENT_RETRY_ATTEMPTS=3
+        # リトライ時の初回待機秒数
+        # AI_AGENT_RETRY_WAIT_INITIAL_SECONDS=1
+        # リトライ時の最大待機秒数（指数バックオフ利用時）
+        # AI_AGENT_RETRY_WAIT_MAX_SECONDS=10
+        # 指数バックオフの乗数 (例: 1秒後, 2秒後, 4秒後...)
+        # AI_AGENT_RETRY_WAIT_MULTIPLIER=2
         ```
-        `GEMINI_MODEL_NAME` は `config.py` でデフォルト値が設定されています。`GOOGLE_API_KEY` はApplication Default Credentials (ADC) が設定されていれば不要な場合があります。GA4関連のAPIキーと測定IDは、API経由でフォームごとにデータベースに設定します。
+        `GEMINI_MODEL_NAME` およびAI Agentリトライ関連の設定は `config.py` でデフォルト値が設定されています。環境変数で上書き可能です。`GOOGLE_API_KEY` はApplication Default Credentials (ADC) が設定されていれば不要な場合があります。GA4関連のAPIキーと測定IDは、API経由でフォームごとにデータベースに設定します。
 
 5.  **データベーススキーマの適用**:
     SupabaseプロジェクトのSQL Editorを使用して、以下のスキーマファイルを順番に実行し、必要なテーブルとカラムを作成します。
@@ -378,7 +390,8 @@ backend/
 
 -   `test_contact_api.py`: `/submit`, `/chat` エンドポイントおよび関連機能のテスト。
 -   `test_form_ga_config_api.py`: GA4設定管理API (`/api/v1/ga_configurations/...`) のテスト。
--   `test_submission_api.py`: 問い合わせステータス更新API (`/api/v1/submissions/.../status`) のテスト。
+-   `test_submission_api.py`: 問い合わせステータス更新API (`/api/v1/submissions/.../status`) および一覧取得APIのテスト。
+-   `test_ai_agent.py`: AI Agentの応答生成ロジック（リトライ処理含む）のテスト。
 
 テストは、サービス層のロジックや外部依存（Supabaseクライアントなど）をモックして、各コンポーネントの動作を独立して検証することに主眼を置いています。
 

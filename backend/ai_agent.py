@@ -2,6 +2,7 @@ from typing import Optional, Tuple
 import json # Added json import
 import logging # Added logging
 from pydantic import BaseModel, Field
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, before_sleep_log # Added tenacity
 from .config import settings # Added
 
 logger = logging.getLogger(__name__) # Initialized logger
@@ -102,9 +103,19 @@ else:
     chat_agent = None
     agent_runner = None
 
-def get_chat_response(message: str, session_id: Optional[str] = None) -> Tuple[str, Optional[str], bool]:
+@retry(
+    stop=stop_after_attempt(settings.ai_agent_retry_attempts),
+    wait=wait_exponential(
+        multiplier=settings.ai_agent_retry_wait_multiplier,
+        min=settings.ai_agent_retry_wait_initial_seconds,
+        max=settings.ai_agent_retry_wait_max_seconds
+    ),
+    retry=retry_if_exception_type(Exception), # Consider refining this later
+    before_sleep=before_sleep_log(logger, logging.WARNING) # Log before retrying
+)
+async def get_chat_response(message: str, session_id: Optional[str] = None) -> Tuple[str, Optional[str], bool]:
     """
-    Gets a chat response from the AI agent.
+    Gets a chat response from the AI agent, with retry logic.
     Returns:
         Tuple[str, Optional[str], bool]: (reply_message, session_id, require_form_flag)
     """
@@ -138,10 +149,22 @@ def get_chat_response(message: str, session_id: Optional[str] = None) -> Tuple[s
         logger.error("agent_runner is None despite AGENT_INITIALIZED_SUCCESSFULLY being true. This indicates a logic flaw.", exc_info=True)
         return "AI Agent is unexpectedly unavailable. Please contact support.", session_id, False
 
-    try:
-        event: Event = agent_runner.run(request=message, session_id=session_id)
+    reply = "[No response from agent or empty response]" # Default reply
+    require_form = False # Default value
+    response_session_id = session_id # Default to passed-in session_id
 
-        reply = "[No response from agent or empty response]" # Default reply
+    try:
+        # Assuming agent_runner.run() is synchronous.
+        # If it were async, it would be `await agent_runner.run_async(...)`.
+        # For a sync call in an async def, to avoid blocking, it should ideally be:
+        # from fastapi.concurrency import run_in_threadpool
+        # event: Event = await run_in_threadpool(agent_runner.run, request=message, session_id=session_id)
+        # However, for this subtask, we apply tenacity as requested, assuming direct call first.
+        logger.debug(f"Calling agent_runner.run for session_id: {session_id}")
+        event: Event = agent_runner.run(request=message, session_id=session_id) # Synchronous call
+        logger.debug(f"agent_runner.run completed for session_id: {session_id}")
+
+        # Process the event
         require_form = False # Default value
         response_session_id = session_id # Default to passed-in session_id
 
@@ -174,17 +197,21 @@ def get_chat_response(message: str, session_id: Optional[str] = None) -> Tuple[s
             response_session_id = event.session_id
         
         logger.debug(
-            "Returning chat response. Session_id: %s, require_form: %s, reply snippet: %.80s",
+            "Successfully processed AI event. Returning chat response. Session_id: %s, require_form: %s, reply snippet: %.80s",
             response_session_id, require_form, reply
         )
         return reply, response_session_id, require_form
 
-    except Exception as e:
-        logger.error("Error during agent_runner.run or response processing: %s", e, exc_info=True)
-        reply = f"[Error communicating with AI Agent]" # Simplified user-facing message
-        response_session_id = session_id
-        require_form = False
-        return reply, response_session_id, require_form
+    except Exception as e: # This will catch exceptions if all retries by tenacity fail OR from event processing logic
+        logger.error(
+            "AI Agent call failed after %s attempts (or error in response processing) for session_id %s: %s",
+            settings.ai_agent_retry_attempts,
+            session_id,
+            e,
+            exc_info=True
+        )
+        # Return a generic error message, specific details are in logs
+        return f"[AI Agent Error after retries or processing error: consult logs for details]", session_id, False
 
 # Example of how you might test this function directly (requires ADK and auth)
 if __name__ == '__main__':
