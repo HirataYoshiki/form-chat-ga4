@@ -1,18 +1,25 @@
 from typing import Optional, Tuple
-import os
 import json # Added json import
+import logging # Added logging
 from pydantic import BaseModel, Field
+from .config import settings # Added
+
+logger = logging.getLogger(__name__) # Initialized logger
+
+ADK_IMPORTED_SUCCESSFULLY = False
+AGENT_INITIALIZED_SUCCESSFULLY = False # New flag
 
 # Attempt to import ADK components. Handle gracefully if not available.
 try:
     from google.adk.agents import LlmAgent
     from google.adk.runners import InMemoryRunner
     from google.adk.events import Event
-    ADK_AVAILABLE = True
-except ImportError:
-    ADK_AVAILABLE = False
-    # Define dummy classes if ADK is not available, so the rest of the file can still be parsed
-    # and the API can run with a clear indication that the ADK part is non-functional.
+    ADK_IMPORTED_SUCCESSFULLY = True
+    logger.debug("ADK components imported successfully.")
+except ImportError as e:
+    logger.error("Failed to import ADK components: %s. AI Agent will not be available.", e, exc_info=True)
+    # Dummy ADK class definitions are below and will be used.
+    pass
 
 # --- Pydantic Model for Structured Agent Response ---
 class AgentStructuredResponse(BaseModel):
@@ -23,6 +30,8 @@ class AgentStructuredResponse(BaseModel):
 
 class LlmAgent:
         def __init__(self, *args, **kwargs):
+            # This print is in a dummy class, potentially keep as is or change to logger.warning
+            # For now, let's assume these dummy classes' prints are for very specific non-ADK scenarios
             print("WARNING: google-adk-python not installed. AI Agent will not function.")
             pass
     class InMemoryRunner:
@@ -42,17 +51,27 @@ class LlmAgent:
 # You might need to set GOOGLE_API_KEY environment variable if not using ADC.
 # The ADK library should pick up Application Default Credentials automatically if set up.
 
-GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash-latest")
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") # ADK might use this if provided
+GEMINI_MODEL_NAME = settings.gemini_model_name
+# The GOOGLE_API_KEY is expected to be sourced by the ADK from the environment variables
+# (which pydantic-settings helps load from .env) or via ADC.
+# We log if it's explicitly set via our application settings, for awareness.
+if settings.google_api_key:
+    logger.info("Application settings include a GOOGLE_API_KEY.")
+else:
+    logger.info("GOOGLE_API_KEY is not set in application settings. ADK will rely on ADC or an externally set GOOGLE_API_KEY environment variable.")
 
 # Generate JSON schema string for the agent's structured response
 AGENT_RESPONSE_JSON_SCHEMA = json.dumps(AgentStructuredResponse.model_json_schema(), indent=2)
 
-if ADK_AVAILABLE:
-    chat_agent = LlmAgent(
-        name="structured_chat_agent", # Renamed for clarity
-        model=GEMINI_MODEL_NAME,
-        instruction=f"""You are a highly intelligent and helpful AI assistant for 'Contact Form Widget Corp'.
+chat_agent = None
+agent_runner = None
+
+if ADK_IMPORTED_SUCCESSFULLY:
+    try:
+        chat_agent = LlmAgent(
+            name="structured_chat_agent", # Renamed for clarity
+            model=GEMINI_MODEL_NAME,
+            instruction=f"""You are a highly intelligent and helpful AI assistant for 'Contact Form Widget Corp'.
 Your primary role is to answer user questions about our company, our innovative contact form widgets, related whitepapers, and product information.
 You MUST always respond with a JSON object that strictly adheres to the following JSON schema:
 ```json
@@ -69,13 +88,19 @@ You are an expert in our products and aim to guide users effectively.
 """,
         output_schema=AgentStructuredResponse, # Pass the Pydantic model here
         # tools=[] # Explicitly no tools, as output_schema disables them
-    )
-    agent_runner = InMemoryRunner(agent=chat_agent)
+        )
+        agent_runner = InMemoryRunner(agent=chat_agent)
+        AGENT_INITIALIZED_SUCCESSFULLY = True
+        logger.info("AI Agent initialized successfully.")
+    except Exception as e:
+        logger.error("Failed to initialize LlmAgent or InMemoryRunner: %s. AI Agent will not be functional.", e, exc_info=True)
+        chat_agent = None # Ensure they are None if init fails
+        agent_runner = None
+        # AGENT_INITIALIZED_SUCCESSFULLY remains False
 else:
-    # Define dummy chat_agent and agent_runner if ADK is not available
-    chat_agent = None # type: ignore
-    agent_runner = None # type: ignore
-
+    logger.warning("ADK components not imported. AI Agent initialization will be skipped.")
+    chat_agent = None
+    agent_runner = None
 
 def get_chat_response(message: str, session_id: Optional[str] = None) -> Tuple[str, Optional[str], bool]:
     """
@@ -83,52 +108,87 @@ def get_chat_response(message: str, session_id: Optional[str] = None) -> Tuple[s
     Returns:
         Tuple[str, Optional[str], bool]: (reply_message, session_id, require_form_flag)
     """
-    if not ADK_AVAILABLE or agent_runner is None: # Check agent_runner as well
-        return "AI Agent is not available (google-adk-python not installed or agent_runner is None).", session_id, False
+    # Changed level to debug and improved message snippet handling
+    logger.debug(
+        "get_chat_response called with session_id: %s, message_snippet: %s",
+        session_id,
+        message[:80] + "..." if message and len(message) > 80 else message
+    )
+
+    # Input Validation for 'message'
+    if not message or not message.strip():
+        logger.warning(
+            "Input validation failed for get_chat_response: message is empty or consists only of whitespace. Session_id: %s",
+            session_id
+        )
+        return "Message cannot be empty. Please provide a valid message.", session_id, False
+
+    if not AGENT_INITIALIZED_SUCCESSFULLY:
+        fallback_message = ""
+        if not ADK_IMPORTED_SUCCESSFULLY:
+            fallback_message = "AI Agent is unavailable due to missing dependencies. Please check server logs."
+            logger.debug("Serving fallback because ADK components not imported.")
+        else:
+            # This means ADK was imported, but LlmAgent/InMemoryRunner initialization failed
+            fallback_message = "AI Agent is currently experiencing setup issues. Please try again later or contact support."
+            logger.debug("Serving fallback because AI Agent failed to initialize.")
+        return fallback_message, session_id, False
+
+    if agent_runner is None:
+        logger.error("agent_runner is None despite AGENT_INITIALIZED_SUCCESSFULLY being true. This indicates a logic flaw.", exc_info=True)
+        return "AI Agent is unexpectedly unavailable. Please contact support.", session_id, False
 
     try:
-        # Run the agent with the user's message
         event: Event = agent_runner.run(request=message, session_id=session_id)
 
-        reply = "[No response from agent or empty response]"
+        reply = "[No response from agent or empty response]" # Default reply
         require_form = False # Default value
         response_session_id = session_id # Default to passed-in session_id
 
         if event.error_message:
+            logger.error("Agent event returned error_message: %s", event.error_message)
             reply = f"[Agent Error: {event.error_message}]"
         elif event.actions and event.actions[0].parts:
             action_part = event.actions[0].parts[0]
-            # Assuming the agent now returns JSON in the 'text' field of the first part
             if hasattr(action_part, 'text') and action_part.text:
+                raw_agent_text = action_part.text
                 try:
-                    structured_response_data = json.loads(action_part.text)
-                    # Validate with Pydantic model (optional but good practice)
+                    structured_response_data = json.loads(raw_agent_text)
                     parsed_response = AgentStructuredResponse(**structured_response_data)
                     reply = parsed_response.message
                     require_form = parsed_response.require_form_after_message
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as jde:
+                    logger.error("Failed to decode JSON response from agent. Text was: %s", raw_agent_text, exc_info=True)
                     reply = "[Agent Error: Failed to decode JSON response]"
                 except Exception as pydantic_error: # Catch Pydantic validation errors
-                    reply = f"[Agent Error: Invalid JSON structure: {pydantic_error}]"
+                    logger.error("Invalid JSON structure from agent. Text was: %s Error: %s", raw_agent_text, pydantic_error, exc_info=True)
+                    reply = f"[Agent Error: Invalid JSON structure]"
             else:
+                logger.warning("Agent produced no actionable text output. Event details: %s", event)
                 reply = "[Agent produced no actionable text output]"
-        
-        # Prefer session_id from the event if available and different
+        else:
+            logger.warning("Agent event had no error_message and no actionable parts. Event details: %s", event)
+            # reply remains "[No response from agent or empty response]"
+
         if hasattr(event, 'session_id') and event.session_id:
             response_session_id = event.session_id
         
-    except Exception as e:
-        # Consider logging the full exception e for debugging
-        print(f"Error communicating with AI Agent: {e}") # Simple print for now
-        reply = f"[Error communicating with AI Agent: {str(e)}]"
-        response_session_id = session_id
-        require_form = False # Ensure require_form is always returned
+        logger.debug(
+            "Returning chat response. Session_id: %s, require_form: %s, reply snippet: %.80s",
+            response_session_id, require_form, reply
+        )
+        return reply, response_session_id, require_form
 
-    return reply, response_session_id, require_form
+    except Exception as e:
+        logger.error("Error during agent_runner.run or response processing: %s", e, exc_info=True)
+        reply = f"[Error communicating with AI Agent]" # Simplified user-facing message
+        response_session_id = session_id
+        require_form = False
+        return reply, response_session_id, require_form
 
 # Example of how you might test this function directly (requires ADK and auth)
 if __name__ == '__main__':
-    if ADK_AVAILABLE:
+    if AGENT_INITIALIZED_SUCCESSFULLY: # Check if agent is ready for testing
         print("Testing AI Agent locally (ensure GOOGLE_API_KEY or ADC is set up)...")
         # Test 1: Simple message
         test_message = "Hello, how are you?"
@@ -155,7 +215,11 @@ if __name__ == '__main__':
         # print(f"  Agent Reply: {reply_text_3}")
         # print(f"  Returned Session ID: {returned_session_id_3}")
         # print(f"  Require Form: {require_form_3}")
-    else:
-        print("ADK not available, cannot run local test.")
-        reply, sid, req_form = get_chat_response("test message if ADK not installed")
-        print(f"Reply when ADK not installed: '{reply}', Session ID: {sid}, Require Form: {req_form}")
+    elif not ADK_IMPORTED_SUCCESSFULLY:
+        print("ADK components not imported. Cannot run local test.")
+        reply, sid, req_form = get_chat_response("test message if ADK components not imported")
+        print(f"Reply: '{reply}', Session ID: {sid}, Require Form: {req_form}")
+    else: # ADK imported but agent not initialized
+        print("AI Agent failed to initialize. Cannot run local test.")
+        reply, sid, req_form = get_chat_response("test message if AI agent failed to initialize")
+        print(f"Reply: '{reply}', Session ID: {sid}, Require Form: {req_form}")
