@@ -13,14 +13,7 @@ from backend.contact_api import SubmissionResponse as SubmissionItemResponse # R
 from backend.services import submission_service
 from backend.services import form_ga_config_service
 from backend.services import ga4_mp_service
-
-# Attempt to import get_current_active_user from contact_api.py
-try:
-    from backend.contact_api import get_current_active_user
-except ImportError:
-    async def get_current_active_user() -> Any: # Dummy for subtask if import fails
-        logging.warning("Using dummy get_current_active_user in submission_router.py")
-        return {"username": "dummy_auth_user_submission_router"}
+from backend.auth import AuthenticatedUser, get_current_active_user # Ensured AuthenticatedUser is imported
 
 logger = logging.getLogger(__name__)
 
@@ -42,42 +35,53 @@ STATUS_TO_GA4_EVENT_MAP: Dict[str, Dict[str, Any]] = {
 
 CONTACT_SUBMISSIONS_TABLE = "contact_submissions" # Define table name constant
 
-@router.patch("/{submission_id}/status", response_model=SubmissionItemResponse) # Use alias for clarity if needed, or SubmissionResponse
+@router.patch("/{submission_id}/status", response_model=SubmissionItemResponse)
 async def update_submission_status_endpoint(
     submission_id: int = Path(..., title="The ID of the submission to update", ge=1),
     payload: SubmissionStatusUpdatePayload,
-    supabase: Client = Depends(get_supabase_client)
-    # current_user is handled by router dependency
+    supabase: Client = Depends(get_supabase_client),
+    user: AuthenticatedUser = Depends(get_current_active_user) # Inject user
 ):
     if supabase is None:
-        logger.error("Supabase client unavailable for PATCH /submissions/.../status")
+        logger.error("Supabase client unavailable for PATCH /submissions/%s/status", submission_id)
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Supabase client unavailable")
 
-    # 1. Fetch current submission to get original_status, form_id, ga_client_id, ga_session_id
+    if not user.tenant_id:
+        logger.error("User tenant_id missing for PATCH /submissions/%s/status", submission_id)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User not associated with a tenant.")
+
+    # 1. Fetch current submission, scoped by tenant_id
     try:
-        # Using .select() with specific columns for efficiency
-        query = supabase.table(CONTACT_SUBMISSIONS_TABLE)                      .select("id, form_id, ga_client_id, ga_session_id, submission_status")                      .eq("id", submission_id)                      .single() # Expects one row or raises error if not found / multiple
+        query = (
+            supabase.table(CONTACT_SUBMISSIONS_TABLE)
+            .select("id, form_id, ga_client_id, ga_session_id, submission_status, tenant_id") # Ensure tenant_id is selected
+            .eq("id", submission_id)
+            .eq("tenant_id", user.tenant_id) # Scope to tenant
+            .single()
+        )
         current_submission_response = query.execute()
 
-        if not current_submission_response.data: # Check if data exists
+        if not current_submission_response.data:
+            logger.warning(f"Submission with id {submission_id} not found for tenant {user.tenant_id}.")
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Submission with id {submission_id} not found.")
         current_submission = current_submission_response.data
         original_status = current_submission.get("submission_status")
 
-    except Exception as e_fetch: # Catch potential errors from .single() if not found, or other DB errors
-        logger.error(f"Failed to fetch submission {submission_id} before status update: {e_fetch}", exc_info=True)
+    except Exception as e_fetch:
+        logger.error(f"Failed to fetch submission {submission_id} for tenant {user.tenant_id}: {e_fetch}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to retrieve submission details for id {submission_id}.")
 
-    # 2. Update the submission status
+    # 2. Update the submission status, scoped by tenant_id
     updated_submission_dict = await submission_service.update_submission_status(
         db=supabase,
+        tenant_id=user.tenant_id, # Pass tenant_id
         submission_id=submission_id,
         new_status=payload.new_status,
         reason=payload.reason
     )
 
     if not updated_submission_dict:
-        logger.error(f"Update_submission_status service failed for submission_id: {submission_id}")
+        logger.error(f"Update_submission_status service failed for submission_id: {submission_id}, tenant_id: {user.tenant_id}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Failed to update submission status for id {submission_id}, record may not exist or update failed.")
 
     # 3. Send GA4 event if status actually changed and is mapped
@@ -85,8 +89,10 @@ async def update_submission_status_endpoint(
         form_id = current_submission.get("form_id")
         ga_client_id = current_submission.get("ga_client_id")
 
-        if form_id and ga_client_id:
-            ga_config_dict = form_ga_config_service.get_ga_configuration(supabase, form_id)
+        if form_id and ga_client_id: # tenant_id is confirmed from user object
+            ga_config_dict = form_ga_config_service.get_ga_configuration(
+                db=supabase, tenant_id=user.tenant_id, form_id=form_id # Pass tenant_id
+            )
 
             if ga_config_dict:
                 api_secret = ga_config_dict.get("ga4_api_secret")
@@ -108,7 +114,7 @@ async def update_submission_status_endpoint(
                     ga4_event_payload = {"name": event_config["name"], "params": event_params}
 
                     logger.info(
-                        f"Attempting to send GA4 event '{ga4_event_payload['name']}' for submission_id: {submission_id}, new_status: {payload.new_status}"
+                        f"Attempting to send GA4 event '{ga4_event_payload['name']}' for tenant_id: {user.tenant_id}, submission_id: {submission_id}, new_status: {payload.new_status}"
                     )
                     try:
                         await ga4_mp_service.send_ga4_event(
@@ -119,15 +125,15 @@ async def update_submission_status_endpoint(
                         )
                     except Exception as e_ga:
                         logger.error(
-                            f"Unhandled error when trying to send GA4 event for submission_id {submission_id} (status {payload.new_status}): {e_ga}",
+                            f"Unhandled error when trying to send GA4 event for tenant_id: {user.tenant_id}, submission_id {submission_id} (status {payload.new_status}): {e_ga}",
                             exc_info=True
                         )
                 else:
-                    logger.warning(f"GA4 API secret or Measurement ID missing in config for form_id '{form_id}'. Cannot send '{payload.new_status}' event for submission {submission_id}.")
+                    logger.warning(f"GA4 API secret or Measurement ID missing in config for tenant_id '{user.tenant_id}', form_id '{form_id}'. Cannot send '{payload.new_status}' event for submission {submission_id}.")
             else:
-                logger.warning(f"GA4 configuration not found for form_id '{form_id}'. Cannot send '{payload.new_status}' event for submission {submission_id}.")
+                logger.warning(f"GA4 configuration not found for tenant_id '{user.tenant_id}', form_id '{form_id}'. Cannot send '{payload.new_status}' event for submission {submission_id}.")
         else:
-            logger.info(f"Skipping GA4 '{payload.new_status}' event: form_id or ga_client_id missing for submission {submission_id}.")
+            logger.info(f"Skipping GA4 '{payload.new_status}' event for tenant_id: {user.tenant_id}, submission {submission_id}: form_id or ga_client_id missing.")
 
     return SubmissionItemResponse(**updated_submission_dict)
 
@@ -144,15 +150,21 @@ async def list_submissions_endpoint(
     limit: int = Query(20, ge=1, le=100, description="Maximum number of records to return."),
     sort_by: Optional[str] = Query("created_at", enum=["created_at", "updated_at", "name", "submission_status", "id", "email", "form_id"], description="Column to sort by."),
     sort_order: Optional[str] = Query("desc", enum=["asc", "desc"], description="Sort order (asc or desc)."),
-    supabase: Client = Depends(get_supabase_client)
+    supabase: Client = Depends(get_supabase_client),
+    user: AuthenticatedUser = Depends(get_current_active_user) # Inject user
 ):
     if supabase is None:
         logger.error("Supabase client unavailable for GET /api/v1/submissions")
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Supabase client unavailable")
 
+    if not user.tenant_id:
+        logger.error("User tenant_id missing for GET /api/v1/submissions")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User not associated with a tenant.")
+
     try:
         submissions_list_dicts, total_count = await submission_service.list_submissions(
             db=supabase,
+            tenant_id=user.tenant_id, # Pass tenant_id
             skip=skip,
             limit=limit,
             form_id=form_id,
