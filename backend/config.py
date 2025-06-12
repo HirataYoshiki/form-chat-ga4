@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     supabase_url: Optional[str] = None
     supabase_service_role_key: Optional[str] = None
 
+    # Supabase Auth Settings
+    supabase_jwks_uri: Optional[str] = None
+    supabase_jwt_audience: str = "authenticated" # Default value
+    # supabase_jwt_issuer: Optional[str] = None # Optional: if not set, can be derived from supabase_url
+
     # AI Agent Retry Settings
     ai_agent_retry_attempts: int = 3
     ai_agent_retry_wait_initial_seconds: int = 1

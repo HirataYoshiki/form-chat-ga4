@@ -24,13 +24,9 @@ class GA4ConfigurationBase(BaseModel):
 class GA4ConfigurationCreatePayload(GA4ConfigurationBase):
     """
     Payload for creating a new GA4 configuration.
-    form_id is included here to associate the GA4 settings with a specific form upon creation.
+    form_id will be a path parameter, tenant_id from authenticated user.
     """
-    form_id: str = Field(
-        ...,
-        min_length=1,
-        description="Unique identifier for the form to associate with this GA4 configuration."
-    )
+    pass # Inherits all fields from GA4ConfigurationBase, form_id removed
 
 class GA4ConfigurationUpdatePayload(BaseModel):
     """
@@ -55,8 +51,9 @@ class GA4ConfigurationUpdatePayload(BaseModel):
 class GA4ConfigurationResponse(GA4ConfigurationBase):
     """
     Represents a GA4 configuration record as returned by the API.
-    Includes database-generated fields like form_id, created_at, and updated_at.
+    Includes database-generated fields like tenant_id, form_id, created_at, and updated_at.
     """
+    tenant_id: str # Added
     form_id: str
     created_at: datetime
     updated_at: datetime

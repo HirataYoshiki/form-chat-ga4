@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException, status # Added Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict # Added ConfigDict
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 from typing import List, Optional, Any # Ensure List, Optional, Any are imported
@@ -11,9 +11,10 @@ from supabase import Client # Add this import
 from . import ai_agent
 from .config import settings # Ensure settings is imported if used directly
 from .db import get_supabase_client # Add this import for the new dependency
-from .routers import form_ga_config_router, submission_router # Added submission_router import
+from .routers import form_ga_config_router, submission_router, tenant_router # Added tenant_router import
 from .services import form_ga_config_service # Added import
 from .services import ga4_mp_service # Added import
+from .auth import get_current_active_user # Added import for new auth
 
 # Configure basic logging
 logging.basicConfig(level=logging.INFO)
@@ -35,6 +36,7 @@ class ContactFormPayload(BaseModel):
     name: str
     email: str
     message: str
+    tenant_id: str # Added
     ga_client_id: Optional[str] = None
     ga_session_id: Optional[str] = None
     form_id: Optional[str] = None # Added
@@ -45,9 +47,15 @@ class SubmissionResponse(BaseModel): # Newly added
     name: str
     email: str
     message: str
+    tenant_id: str # Added
     ga_client_id: Optional[str] = None
     ga_session_id: Optional[str] = None
     form_id: Optional[str] = None
+    submission_status: Optional[str] = None # Assuming this comes from DB
+    status_change_reason: Optional[str] = None # Assuming this comes from DB
+    updated_at: Optional[datetime] = None # Assuming this comes from DB
+
+    model_config = ConfigDict(from_attributes=True) # Added for consistency/ORM mode
 
 # --- Models for /chat endpoint ---
 class ChatMessage(BaseModel):
@@ -88,9 +96,13 @@ async def handle_form_submission(
             logger.info(f"Successfully inserted submission. ID: {inserted_record.get('id')}")
 
             # --- GA4 generate_lead イベント送信 ---
-            if payload.form_id and payload.ga_client_id:
+            if payload.tenant_id and payload.form_id and payload.ga_client_id: # Added tenant_id check
                 try:
-                    ga_config_dict = form_ga_config_service.get_ga_configuration(supabase, payload.form_id)
+                    ga_config_dict = form_ga_config_service.get_ga_configuration(
+                        supabase,
+                        tenant_id=payload.tenant_id, # Pass tenant_id
+                        form_id=payload.form_id
+                    )
                     if ga_config_dict:
                         api_secret = ga_config_dict.get("ga4_api_secret")
                         measurement_id = ga_config_dict.get("ga4_measurement_id")
@@ -120,11 +132,11 @@ async def handle_form_submission(
                         else:
                             logger.warning(f"GA4 API secret or Measurement ID missing in config for form_id '{payload.form_id}'. Cannot send generate_lead event.")
                     else:
-                        logger.warning(f"GA4 configuration not found for form_id '{payload.form_id}'. Cannot send generate_lead event.")
+                        logger.warning(f"GA4 configuration not found for tenant_id '{payload.tenant_id}', form_id '{payload.form_id}'. Cannot send generate_lead event.")
                 except Exception as e_ga_setup: # Catch errors during GA config fetch or event construction
-                    logger.error(f"Error during GA4 event preparation for generate_lead (form_id: {payload.form_id}): {e_ga_setup}", exc_info=True)
+                    logger.error(f"Error during GA4 event preparation for generate_lead (tenant_id: {payload.tenant_id}, form_id: {payload.form_id}): {e_ga_setup}", exc_info=True)
             else:
-                logger.info("Skipping GA4 generate_lead event: form_id or ga_client_id missing from payload for submission ID: %s.", inserted_record.get('id'))
+                logger.info("Skipping GA4 generate_lead event: tenant_id, form_id or ga_client_id missing from payload for submission ID: %s.", inserted_record.get('id'))
             # --- GA4 イベント送信ここまで ---
 
             return SubmissionResponse(**inserted_record)
@@ -196,15 +208,16 @@ async def read_root():
     # A real implementation would yield a SQLAlchemy Session.
     # yield None # Removed stub get_db function
 
-# Placeholder for user authentication dependency
-# Replace with your actual authentication logic
-async def get_current_active_user() -> Any: # Added return type hint
-    # Mock implementation.
-    # To simulate a protected endpoint that currently doesn't authenticate properly:
-    # raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-    # For development, returning a dummy user or None to bypass actual auth.
-    # return {"username": "devuser", "permissions": ["view_analytics"]} # Keeping this for now, might be used by other parts or future tests
-    return {"username": "devuser", "permissions": ["view_analytics"]}
+# The get_current_active_user is now imported from backend.auth
+# The old placeholder function below is removed.
+# async def get_current_active_user() -> Any: # Added return type hint
+#     # Mock implementation.
+#     # To simulate a protected endpoint that currently doesn't authenticate properly:
+#     # raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+#     # For development, returning a dummy user or None to bypass actual auth.
+#     # return {"username": "devuser", "permissions": ["view_analytics"]} # Keeping this for now, might be used by other parts or future tests
+#     return {"username": "devuser", "permissions": ["view_analytics"]}
 
 app.include_router(form_ga_config_router.router)
-app.include_router(submission_router.router) # Added line to include the new submission router
+app.include_router(submission_router.router)
+app.include_router(tenant_router.router) # Added line to include the new tenant router

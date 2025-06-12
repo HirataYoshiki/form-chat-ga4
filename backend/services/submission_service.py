@@ -9,6 +9,7 @@ CONTACT_SUBMISSIONS_TABLE = "contact_submissions"
 
 async def update_submission_status(
     db: Client,
+    tenant_id: str,
     submission_id: int,
     new_status: str,
     reason: Optional[str] = None
@@ -42,27 +43,26 @@ async def update_submission_status(
             db.table(CONTACT_SUBMISSIONS_TABLE)
             .update(update_data)
             .eq("id", submission_id)
+            .eq("tenant_id", tenant_id) # Add tenant_id filter
             .execute()
         )
 
-        # Supabase update typically returns the updated record(s) in response.data
         if response.data and len(response.data) > 0:
-            logger.info(f"Submission status updated for id: {submission_id} to '{new_status}'. Reason: '{reason if reason else 'N/A'}'")
+            logger.info(f"Submission status updated for tenant_id: {tenant_id}, id: {submission_id} to '{new_status}'. Reason: '{reason if reason else 'N/A'}'")
             return response.data[0]
         else:
-            # This branch might be hit if the record with submission_id doesn't exist,
-            # or if RLS prevents the update and returns no data.
             logger.warning(
-                f"Failed to update submission status for id: {submission_id}. Record not found or no data returned from update. "
+                f"Failed to update submission status for tenant_id: {tenant_id}, id: {submission_id}. Record not found or no data returned. "
                 f"Supabase response: {response.model_dump_json() if hasattr(response, 'model_dump_json') else str(response)}"
             )
             return None
     except Exception as e:
-        logger.error(f"Exception updating submission status for id {submission_id}: {e}", exc_info=True)
+        logger.error(f"Exception updating submission status for tenant_id: {tenant_id}, id: {submission_id}: {e}", exc_info=True)
         return None
 
-async def list_submissions( # Make it async as it might do I/O, even if Supabase client is sync
+async def list_submissions(
     db: Client,
+    tenant_id: str, # Added tenant_id
     skip: int = 0,
     limit: int = 20,
     form_id: Optional[str] = None,
@@ -75,16 +75,16 @@ async def list_submissions( # Make it async as it might do I/O, even if Supabase
     sort_order: Optional[str] = "desc",   # Default order
 ) -> Tuple[List[Dict[str, Any]], int]:
     """
-    Lists contact submissions with filtering, pagination, and sorting.
+    Lists contact submissions for a specific tenant with filtering, pagination, and sorting.
     Returns a tuple of (list of submission records as dictionaries, total_count).
     Note: The Supabase client's execute() method is synchronous. For true async
     behavior in a FastAPI async endpoint, this should be run in a thread pool
     (e.g., using fastapi.concurrency.run_in_threadpool).
     """
     try:
-        query = db.table(CONTACT_SUBMISSIONS_TABLE).select("*", count="exact")
+        query = db.table(CONTACT_SUBMISSIONS_TABLE).select("*", count="exact").eq("tenant_id", tenant_id)
 
-        # Apply filters
+        # Apply other filters
         if form_id:
             query = query.eq("form_id", form_id)
         if submission_status:
@@ -120,9 +120,9 @@ async def list_submissions( # Make it async as it might do I/O, even if Supabase
         submissions = response.data if response.data else []
         total_count = response.count if response.count is not None else 0 # Get total count from 'exact'
 
-        logger.debug(f"Listed {len(submissions)} submissions (skip={skip}, limit={limit}) with total_count {total_count} matching criteria.")
+        logger.debug(f"Listed {len(submissions)} submissions for tenant_id {tenant_id} (skip={skip}, limit={limit}) with total_count {total_count} matching criteria.")
         return submissions, total_count
 
     except Exception as e:
-        logger.error(f"Exception listing submissions with criteria (form_id={form_id}, status={submission_status}, etc.): {e}", exc_info=True)
+        logger.error(f"Exception listing submissions for tenant_id {tenant_id} with criteria (form_id={form_id}, status={submission_status}, etc.): {e}", exc_info=True)
         return [], 0
