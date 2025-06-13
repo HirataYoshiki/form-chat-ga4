@@ -11,10 +11,11 @@ from supabase import Client # Add this import
 from . import ai_agent
 from .config import settings # Ensure settings is imported if used directly
 from .db import get_supabase_client # Add this import for the new dependency
-from .routers import form_ga_config_router, submission_router, tenant_router # Added tenant_router import
+from .routers import form_ga_config_router, submission_router, tenant_router, rag_router # Added rag_router import
 from .services import form_ga_config_service # Added import
 from .services import ga4_mp_service # Added import
-from .auth import get_current_active_user # Added import for new auth
+from .auth import AuthenticatedUser, get_current_active_user # Added AuthenticatedUser
+from uuid import UUID # For tenant_id type
 
 # Configure basic logging
 logging.basicConfig(level=logging.INFO)
@@ -163,12 +164,34 @@ async def handle_form_submission(
         )
 
 @app.post("/chat", response_model=ChatResponse)
-async def handle_chat(payload: ChatMessage):
-    logger.info(f"Received chat message: '{payload.message}', session_id: {payload.session_id}")
-    
-    # Call the ai_agent.py function which now returns three values
-    agent_reply, response_session_id, require_form = ai_agent.get_chat_response(
-        message=payload.message, 
+async def handle_chat(
+    payload: ChatMessage,
+    current_user: AuthenticatedUser = Depends(get_current_active_user), # Added authentication
+    db: Client = Depends(get_supabase_client) # Added Supabase client dependency
+):
+    logger.info(f"Received chat message: '{payload.message}', session_id: {payload.session_id}, user_id: {current_user.id}, tenant_id: {current_user.tenant_id}")
+
+    if not current_user.tenant_id:
+        logger.warning(f"User {current_user.id} attempted to chat without a tenant_id.")
+        # Or, allow chat without RAG if tenant_id is None (e.g. for superuser or general queries)
+        # For now, let's assume RAG is primary and requires tenant_id for corpus.
+        # If general chat without RAG is allowed for users without tenant_id, this check needs adjustment.
+        # raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User not associated with a tenant for RAG context.")
+        # For now, let's allow the call to proceed, and ai_agent will skip RAG if tenant_id is None.
+        # This means the tenant_id parameter in get_chat_response needs to be Optional[uuid.UUID].
+        # The prompt for ai_agent.py made it uuid.UUID (required). This is a conflict.
+        # I will proceed assuming tenant_id IS required for chat for now, and if not available, it's an issue.
+        # This aligns with tenant-scoped RAG.
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Chat requires a user associated with a tenant.")
+
+    if db is None:
+        logger.error(f"Supabase client not available for /chat endpoint for user {current_user.id}")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database service unavailable.")
+
+    agent_reply, response_session_id, require_form = await ai_agent.get_chat_response(
+        message=payload.message,
+        tenant_id=UUID(current_user.tenant_id), # Pass tenant_id
+        db=db, # Pass Supabase client
         session_id=payload.session_id
     )
     
@@ -220,4 +243,5 @@ async def read_root():
 
 app.include_router(form_ga_config_router.router)
 app.include_router(submission_router.router)
-app.include_router(tenant_router.router) # Added line to include the new tenant router
+app.include_router(tenant_router.router)
+app.include_router(rag_router.router) # Added rag_router

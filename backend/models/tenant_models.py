@@ -20,11 +20,14 @@ class TenantUpdatePayload(BaseModel):
     company_name: Optional[str] = Field(None, min_length=1, description="New company name, if changing.")
     domain: Optional[str] = Field(None, description="New domain, if changing. Set to null to clear.")
     is_deleted: Optional[bool] = Field(None, description="Set to true to logically delete, false to restore.")
+    rag_corpus_display_name: Optional[str] = Field(None, description="Update the display name of the RAG corpus for this tenant.") # rag_corpus_id not updatable by user directly
 
 class TenantResponse(TenantBase):
     """Response model for a tenant, including database-generated fields."""
     tenant_id: UUID4 # UUID type from Pydantic
     is_deleted: bool
+    rag_corpus_id: Optional[str] = None # Added
+    rag_corpus_display_name: Optional[str] = None # Added
     created_at: datetime
     updated_at: datetime
 

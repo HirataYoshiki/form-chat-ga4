@@ -1,0 +1,5 @@
+functions-framework==3.*
+google-cloud-aiplatform>=1.47.0
+google-cloud-tasks>=2.0.0
+supabase>=1.0.0
+# Add any other specific dependencies

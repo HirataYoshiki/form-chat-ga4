@@ -25,6 +25,15 @@ class Settings(BaseSettings):
     ai_agent_retry_wait_max_seconds: int = 10
     ai_agent_retry_wait_multiplier: int = 2
 
+    # Vertex AI RAG Settings
+    PROJECT_ID: Optional[str] = None
+    VERTEX_AI_REGION: str = "us-central1"
+    RAG_GCS_BUCKET_UPLOADS: Optional[str] = None
+    RAG_GCS_BUCKET_PROCESSED: Optional[str] = None
+    DEFAULT_RAG_CHUNK_SIZE: int = 1000
+    DEFAULT_RAG_CHUNK_OVERLAP: int = 200
+    GOOGLE_APPLICATION_CREDENTIALS: Optional[str] = None
+
     # Configuration for loading from .env file
     # This uses Pydantic V2 (pydantic-settings) style.
     # For Pydantic V1, you would use:
