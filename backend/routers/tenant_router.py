@@ -1,7 +1,7 @@
 # backend/routers/tenant_router.py
 import logging
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Path # Added Path
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Path, BackgroundTasks # Added BackgroundTasks
 from typing import List, Optional, Any
 from supabase import Client
 
@@ -41,6 +41,7 @@ router.dependencies.append(Depends(require_superuser_role))
 @router.post("", response_model=TenantResponse, status_code=status.HTTP_201_CREATED)
 async def create_tenant_endpoint(
     payload: TenantCreatePayload,
+    background_tasks: BackgroundTasks, # Added BackgroundTasks
     supabase: Client = Depends(get_supabase_client)
     # superuser: AuthenticatedUser = Depends(require_superuser_role) # Covered by router dependency
 ):
@@ -51,7 +52,7 @@ async def create_tenant_endpoint(
     # This would require additional service methods like get_tenant_by_name/domain.
     # For now, relying on DB constraints if any (e.g. unique domain if schema had it).
 
-    created_tenant_dict = await tenant_service.create_tenant(supabase, payload)
+    created_tenant_dict = await tenant_service.create_tenant(db=supabase, payload=payload, background_tasks=background_tasks)
     if not created_tenant_dict:
         # Consider more specific error if service layer can provide it (e.g. duplicate)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create tenant. Check server logs for details.")
