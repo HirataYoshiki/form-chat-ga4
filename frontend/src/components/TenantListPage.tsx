@@ -143,6 +143,14 @@ const TenantListPage: React.FC = () => {
                   >
                     {deletingTenantId === tenant.id ? 'Deleting...' : 'Delete'}
                   </button>
+                  <Link to={`/admin/tenants/${tenant.id}/rag-files`}>
+                    <button
+                      style={styles.button}
+                      disabled={deletingTenantId === tenant.id}
+                    >
+                      RAG Files
+                    </button>
+                  </Link>
                 </td>
               </tr>
             ))}

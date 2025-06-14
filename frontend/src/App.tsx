@@ -5,7 +5,8 @@ import TenantCreatePage from './components/TenantCreatePage';
 import TenantEditPage from './components/TenantEditPage';
 import LoginPage from './components/LoginPage';
 import ProtectedRoute from './components/ProtectedRoute';
-import { AuthProvider, useAuth } from './contexts/AuthContext'; // Import useAuth
+import RagFileManagementPage from './components/RagFileManagementPage'; // Import RagFileManagementPage
+import { AuthProvider, useAuth } from './contexts/AuthContext';
 
 // Placeholder for a HomePage component
 const HomePage: React.FC = () => (
@@ -110,6 +111,7 @@ const AppContent: React.FC = () => {
           <Route path="/admin/tenants" element={<TenantListPage />} />
           <Route path="/admin/tenants/new" element={<TenantCreatePage />} />
           <Route path="/admin/tenants/edit/:tenantId" element={<TenantEditPage />} />
+          <Route path="/admin/tenants/:tenantId/rag-files" element={<RagFileManagementPage />} />
           {/* Add other protected admin routes here */}
         </Route>
 
