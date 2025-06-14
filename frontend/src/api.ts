@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { supabase } from './supabaseClient'; // Make sure this path is correct
 
 const apiClient = axios.create({
   baseURL: '/api/v1', // Adjust if your API is hosted elsewhere
@@ -7,13 +8,27 @@ const apiClient = axios.create({
   },
 });
 
-// Example of how to add a request interceptor for auth tokens later
-// apiClient.interceptors.request.use(config => {
-//   const token = localStorage.getItem('authToken'); // Or however you store your token
-//   if (token) {
-//     config.headers.Authorization = `Bearer ${token}`;
-//   }
-//   return config;
-// });
+// Add a request interceptor for auth tokens
+apiClient.interceptors.request.use(
+  async (config) => {
+    const { data: { session }, error } = await supabase.auth.getSession();
+
+    if (error) {
+      console.error('Error getting session for API client:', error.message);
+      // Optionally, you could prevent the request or handle the error differently
+      // For now, let the request proceed without the token if session fetch fails
+      return config;
+    }
+
+    if (session && session.access_token) {
+      config.headers.Authorization = `Bearer ${session.access_token}`;
+    }
+    return config;
+  },
+  (error) => {
+    // Do something with request error
+    return Promise.reject(error);
+  }
+);
 
 export default apiClient;

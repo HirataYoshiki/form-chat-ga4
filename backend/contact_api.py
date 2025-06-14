@@ -11,7 +11,7 @@ from supabase import Client # Add this import
 from . import ai_agent
 from .config import settings # Ensure settings is imported if used directly
 from .db import get_supabase_client # Add this import for the new dependency
-from .routers import form_ga_config_router, submission_router, tenant_router, rag_router # Added rag_router import
+from .routers import form_ga_config_router, submission_router, tenant_router, rag_router, user_router # Added user_router
 from .services import form_ga_config_service # Added import
 from .services import ga4_mp_service # Added import
 from .auth import AuthenticatedUser, get_current_active_user # Added AuthenticatedUser
@@ -245,3 +245,4 @@ app.include_router(form_ga_config_router.router)
 app.include_router(submission_router.router)
 app.include_router(tenant_router.router)
 app.include_router(rag_router.router) # Added rag_router
+app.include_router(user_router.router) # Added user_router
