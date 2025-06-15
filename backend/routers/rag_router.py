@@ -4,8 +4,13 @@ from typing import List, Annotated
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, BackgroundTasks, Path, status
 from supabase import Client as SupabaseSyncClient
 
-from backend.services.rag_service import upload_files_for_rag, list_rag_files_for_tenant, delete_rag_file_by_id # Added new imports
-from backend.models.rag_models import RagFileUploadResponse, RagFileMetadata # Added RagFileMetadata
+from backend.services.rag_service import (
+    upload_files_for_rag,
+    list_rag_files_for_tenant,
+    delete_rag_file_by_id,
+    get_rag_file_details # Added import
+)
+from backend.models.rag_models import RagFileUploadResponse, RagFileMetadata
 from backend.db import get_supabase_client
 from backend.auth import AuthenticatedUser, get_current_active_user
 
@@ -25,10 +30,6 @@ async def upload_rag_documents_endpoint(
     background_tasks: BackgroundTasks = Depends()
 ):
     if str(current_user.tenant_id) != str(tenant_id) and current_user.app_role != "superuser":
-        logger.warning(
-            f"User {current_user.id} (tenant: {current_user.tenant_id}, role: {current_user.app_role}) "
-            f"attempted to upload RAG files for tenant {tenant_id}."
-        )
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to upload files for this tenant.")
 
     if not files:
@@ -44,13 +45,17 @@ async def upload_rag_documents_endpoint(
             db=db,
             background_tasks=background_tasks
         )
-        # The status_url is now correctly formed in the service layer based on a generic path.
-        # No need to re-generate it here if the service provides the correct one.
-        # If the service provides a relative path or needs router.url_path_for, adjust accordingly.
-        # For now, assuming service provides the full or correct relative path for status_url.
+
+        # Update status_url for each file using the new endpoint name
+        for detail in response_payload.uploaded_files:
+            if detail.processing_id: # Ensure processing_id is valid before creating URL
+                 # Using relative path from this router's prefix for clarity if frontend reconstructs full URL
+                detail.status_url = router.url_path_for("get_rag_file_status_for_tenant", tenant_id=str(tenant_id), processing_id=str(detail.processing_id))
+            else:
+                detail.status_url = "" # Or some indicator that status URL isn't applicable
+
         return response_payload
     except HTTPException as http_exc:
-        logger.warning(f"HTTPException during RAG file upload for tenant {tenant_id} by user {current_user.id}: {http_exc.detail}")
         raise http_exc
     except Exception as e:
         logger.error(f"Unexpected error in upload_rag_documents endpoint for tenant {tenant_id} by user {current_user.id}: {e}", exc_info=True)
@@ -62,16 +67,31 @@ async def list_files_for_tenant_endpoint(
     current_user: AuthenticatedUser = Depends(get_current_active_user),
     db: SupabaseSyncClient = Depends(get_supabase_client)
 ):
-    # Authorization: Allow superuser OR if the user's tenant_id matches the path tenant_id
     if current_user.app_role != "superuser" and (not current_user.tenant_id or str(current_user.tenant_id) != str(tenant_id)):
-        logger.warning(
-            f"User {current_user.id} (tenant: {current_user.tenant_id}, role: {current_user.app_role}) "
-            f"attempted to list RAG files for unauthorized tenant {tenant_id}."
-        )
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to list files for this tenant.")
 
     logger.info(f"User {current_user.id} listing RAG files for tenant {tenant_id}.")
     return await list_rag_files_for_tenant(db, tenant_id)
+
+@router.get("/{processing_id}/status",
+            response_model=RagFileMetadata,
+            tags=["RAG Files"],
+            name="get_rag_file_status_for_tenant") # Name for url_path_for
+async def get_rag_file_status_endpoint(
+    tenant_id: Annotated[uuid.UUID, Path(description="Tenant ID")],
+    processing_id: Annotated[uuid.UUID, Path(description="Processing ID of the file upload")],
+    current_user: AuthenticatedUser = Depends(get_current_active_user),
+    db: SupabaseSyncClient = Depends(get_supabase_client),
+):
+    if current_user.app_role != "superuser" and (not current_user.tenant_id or str(current_user.tenant_id) != str(tenant_id)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view status for this tenant's file.")
+
+    logger.info(f"User {current_user.id} requesting status for RAG file {processing_id} of tenant {tenant_id}.")
+
+    file_details = await get_rag_file_details(db, tenant_id, processing_id)
+    if not file_details:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"RAG file with processing_id {processing_id} not found for tenant {tenant_id}.")
+    return file_details
 
 @router.delete("/{processing_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_file_endpoint(
@@ -80,49 +100,11 @@ async def delete_file_endpoint(
     current_user: AuthenticatedUser = Depends(get_current_active_user),
     db: SupabaseSyncClient = Depends(get_supabase_client)
 ):
-    # Authorization: Allow superuser OR if the user's tenant_id matches the path tenant_id
     if current_user.app_role != "superuser" and (not current_user.tenant_id or str(current_user.tenant_id) != str(tenant_id)):
-        logger.warning(
-            f"User {current_user.id} (tenant: {current_user.tenant_id}, role: {current_user.app_role}) "
-            f"attempted to delete RAG file {processing_id} for unauthorized tenant {tenant_id}."
-        )
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to delete files for this tenant.")
 
     logger.info(f"User {current_user.id} attempting to delete RAG file {processing_id} for tenant {tenant_id}.")
     success = await delete_rag_file_by_id(db, tenant_id, processing_id)
     if not success:
-        # The service function returns False if file not found for deletion, or True if deleted.
-        # It raises HTTPException for server errors during the delete process.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found or already deleted.")
-    return None # For 204 No Content response
-
-# The status endpoint below is for a specific file's processing status.
-# Note: The `upload_files_for_rag` service now generates status_url like "/api/v1/rag_processing_jobs/{processing_id}/status".
-# This implies that a *different router* handles that path, not this one.
-# This current router is prefixed with /api/v1/tenants/{tenant_id}/rag_files.
-# For consistency, if this router were to have a status endpoint for a *file within a tenant's context*,
-# it might be GET /{processing_id}/status.
-# The existing endpoint below seems to be a duplicate or misplaced status check if we consider the service's generated URL.
-# I will comment it out for now as the task is to add list and delete, and the status URL generated by service points elsewhere.
-
-# @router.get("/status/{processing_id}", # This path would be /api/v1/tenants/{tenant_id}/rag_files/status/{processing_id}
-#             # response_model=RagFileMetadata, # Assuming RagFileMetadata can represent status
-#             tags=["RAG Files"],
-#             name="get_rag_file_status_endpoint_within_tenant_context"
-#             )
-# async def get_rag_file_status_within_tenant_context_endpoint(
-#     tenant_id: Annotated[uuid.UUID, Path(description="Tenant ID")],
-#     processing_id: Annotated[uuid.UUID, Path(description="Processing ID of the file upload")],
-#     current_user: AuthenticatedUser = Depends(get_current_active_user),
-#     db: SupabaseSyncClient = Depends(get_supabase_client),
-# ):
-#     if str(current_user.tenant_id) != str(tenant_id) and current_user.app_role != "superuser":
-#         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view status for this tenant.")
-#     logger.info(f"User {current_user.id} requesting status for processing_id {processing_id} for tenant {tenant_id} (within tenant context).")
-#     # This would need a service function like `get_rag_file_details`
-#     # file_details = await get_rag_file_details(db, tenant_id, processing_id) # Example
-#     # if not file_details:
-#     #     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File processing record not found for this tenant.")
-#     # return file_details
-#     # For now, returning a placeholder as service function is not defined for this specific path structure.
-#     raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Status endpoint per file not fully implemented here yet.")
+    return None
