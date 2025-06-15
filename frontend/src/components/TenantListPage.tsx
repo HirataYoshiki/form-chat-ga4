@@ -21,21 +21,31 @@ const TenantListPage: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [deletingTenantId, setDeletingTenantId] = useState<string | null>(null);
-  const [hoveredRowId, setHoveredRowId] = useState<string | null>(null); // For row hover effect
+  const [hoveredRowId, setHoveredRowId] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [totalCount, setTotalCount] = useState<number>(0);
+
+  const ITEMS_PER_PAGE = 20;
 
   const fetchTenants = useCallback(async () => {
     setLoading(true);
     setError(null);
+    const skip = (currentPage - 1) * ITEMS_PER_PAGE;
+    const limit = ITEMS_PER_PAGE;
+
     try {
-      const response = await apiClient.get<TenantListResponse>('/tenants');
+      const response = await apiClient.get<TenantListResponse>('/tenants', {
+        params: { skip, limit, show_deleted: false },
+      });
       setTenants(response.data.tenants);
+      setTotalCount(response.data.total_count);
     } catch (err: any) {
       setError('Failed to fetch tenants. Ensure you are logged in with superuser privileges and the backend is running.');
       console.error('Error fetching tenants:', err);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [currentPage]);
 
   useEffect(() => {
     fetchTenants();
@@ -46,7 +56,12 @@ const TenantListPage: React.FC = () => {
       setDeletingTenantId(tenantId);
       try {
         await apiClient.delete(`/tenants/${tenantId}`);
-        fetchTenants();
+        // If on the last page and deleting the last item, adjust currentPage
+        if (tenants.length === 1 && currentPage > 1) {
+            setCurrentPage(prev => prev - 1);
+        } else {
+            fetchTenants();
+        }
       } catch (err: any) {
         console.error('Error deleting tenant:', err);
         const errorMsg = err.response?.data?.detail || 'An unknown error occurred.';
@@ -56,6 +71,8 @@ const TenantListPage: React.FC = () => {
       }
     }
   };
+
+  const totalPages = Math.ceil(totalCount / ITEMS_PER_PAGE);
 
   const styles = {
     container: { padding: '20px', fontFamily: 'Arial, sans-serif' },
@@ -72,24 +89,42 @@ const TenantListPage: React.FC = () => {
       padding: '10px',
     },
     button: {
-      marginRight: '8px', // Adjusted spacing
-      marginBottom: '5px', // Added for potential wrapping
+      marginRight: '8px',
+      marginBottom: '5px',
       padding: '5px 10px',
       border: '1px solid #ccc',
       borderRadius: '4px',
       cursor: 'pointer',
     },
     errorText: { color: 'red', marginTop: '10px', marginBottom: '10px'},
-    trHover: { backgroundColor: '#f5f5f5' }, // Style for hovered row
-    loadingText: { fontSize: '18px', color: '#555', textAlign: 'center' as 'center', padding: '20px' }, // Style for loading text
+    trHover: { backgroundColor: '#f5f5f5' },
+    loadingText: { fontSize: '18px', color: '#555', textAlign: 'center' as 'center', padding: '20px' },
+    paginationControls: {
+      marginTop: '20px',
+      display: 'flex',
+      justifyContent: 'center',
+      alignItems: 'center'
+    },
+    paginationButton: {
+      padding: '8px 12px',
+      margin: '0 5px',
+      border: '1px solid #ccc',
+      borderRadius: '4px',
+      cursor: 'pointer',
+      backgroundColor: '#f0f0f0'
+    },
+    paginationInfo: {
+      margin: '0 10px',
+      fontSize: '0.9em'
+    },
   };
 
-  if (loading && tenants.length === 0) {
+  if (loading && tenants.length === 0 && currentPage === 1) { // Show initial loading only on first page load
     return <p style={styles.loadingText}>Loading tenants...</p>;
   }
 
   if (error && tenants.length === 0 && !deletingTenantId) {
-    return <p style={styles.errorText}>{error}</p>; // Use errorText style
+    return <p style={styles.errorText}>{error}</p>;
   }
 
   return (
@@ -105,7 +140,7 @@ const TenantListPage: React.FC = () => {
 
       {loading && <p style={styles.loadingText}>Refreshing tenant list...</p>}
 
-      {tenants.length === 0 && !loading && !error && (
+      {!loading && tenants.length === 0 && !error && ( // Ensure not loading and no error before showing "no tenants"
         <p>No tenants found.</p>
       )}
 
@@ -134,7 +169,7 @@ const TenantListPage: React.FC = () => {
                 <td style={styles.td}>{new Date(tenant.created_at).toLocaleDateString()}</td>
                 <td style={styles.td}>
                   <Link to={`/admin/tenants/edit/${tenant.id}`}>
-                    <button style={styles.button} disabled={deletingTenantId === tenant.id}>Edit</button>
+                    <button style={styles.button} disabled={!!deletingTenantId}>Edit</button>
                   </Link>
                   <button
                     style={styles.button}
@@ -146,7 +181,7 @@ const TenantListPage: React.FC = () => {
                   <Link to={`/admin/tenants/${tenant.id}/rag-files`}>
                     <button
                       style={styles.button}
-                      disabled={deletingTenantId === tenant.id}
+                      disabled={!!deletingTenantId}
                     >
                       RAG Files
                     </button>
@@ -156,6 +191,28 @@ const TenantListPage: React.FC = () => {
             ))}
           </tbody>
         </table>
+      )}
+
+      {totalPages > 1 && (
+        <div style={styles.paginationControls}>
+          <button
+            onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+            disabled={currentPage === 1 || loading || !!deletingTenantId}
+            style={styles.paginationButton}
+          >
+            Previous
+          </button>
+          <span style={styles.paginationInfo}>
+            Page {currentPage} of {totalPages}
+          </span>
+          <button
+            onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+            disabled={currentPage === totalPages || totalPages === 0 || loading || !!deletingTenantId}
+            style={styles.paginationButton}
+          >
+            Next
+          </button>
+        </div>
       )}
     </div>
   );
