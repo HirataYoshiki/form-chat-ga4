@@ -1,9 +1,12 @@
 import React, { useState, useEffect } from 'react';
+import apiClient from '../api'; // Import apiClient
 
 interface ContactFormWidgetProps {
   formTitle?: string;
   submitButtonText?: string;
-  // apiEndpoint?: string; // To be added later
+  formId: string; // Added formId
+  tenantId: string; // Added tenantId
+  // apiEndpoint?: string; // This can be removed if apiClient is now the standard
 }
 
 const getGAClientId = (): string => {
@@ -29,6 +32,8 @@ const getGASessionId = (): string => {
 const ContactFormWidget: React.FC<ContactFormWidgetProps> = ({
   formTitle = 'お問い合わせ',
   submitButtonText = '送信',
+  formId, // Destructure formId from props
+  tenantId, // Destructure tenantId from props
 }) => {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -36,23 +41,53 @@ const ContactFormWidget: React.FC<ContactFormWidgetProps> = ({
   const [gaClientId, setGaClientId] = useState('');
   const [gaSessionId, setGaSessionId] = useState('');
 
+  // New state variables
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [submitStatus, setSubmitStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  const [submitMessage, setSubmitMessage] = useState<string | null>(null);
+
   useEffect(() => {
     setGaClientId(getGAClientId());
     setGaSessionId(getGASessionId());
   }, []);
 
-  const handleSubmit = (event: React.FormEvent) => {
+  const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
-    // Actual submission logic will be added later.
-    // This will involve sending data to apiEndpoint.
-    console.log("Form submitted with data:", {
+    setIsSubmitting(true);
+    setSubmitStatus('idle');
+    setSubmitMessage(null);
+
+    const payload = {
       name,
       email,
       message,
       ga_client_id: gaClientId,
       ga_session_id: gaSessionId,
-    });
-    // alert("Form submitted (see console for data). Actual API call not implemented yet.");
+      formId, // Use formId from props
+      tenantId, // Use tenantId from props
+    };
+
+    try {
+      // console.log("Submitting payload:", payload); // For debugging
+      const response = await apiClient.post('/submit', payload);
+      // console.log("Submission successful:", response.data); // For debugging
+      setSubmitStatus('success');
+      setSubmitMessage('Form submitted successfully!');
+      // Optionally reset form fields
+      setName('');
+      setEmail('');
+      setMessage('');
+    } catch (error: any) {
+      // console.error("Submission error:", error); // For debugging
+      setSubmitStatus('error');
+      if (error.response && error.response.data && error.response.data.detail) {
+        setSubmitMessage(`Error: ${error.response.data.detail}`);
+      } else {
+        setSubmitMessage('An unexpected error occurred. Please try again.');
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const styles = {
@@ -105,9 +140,24 @@ const ContactFormWidget: React.FC<ContactFormWidgetProps> = ({
       cursor: 'pointer',
       transition: 'background-color 0.2s ease-in-out',
     },
-    // buttonHover: { // Note: Inline styles don't directly support pseudo-classes like :hover
-    //   backgroundColor: '#0056b3',
-    // }
+    buttonDisabled: { // Style for disabled button
+      backgroundColor: '#cccccc',
+      cursor: 'not-allowed',
+    },
+    messageDisplay: { // Base style for submit message
+      marginTop: '15px',
+      padding: '10px',
+      borderRadius: '4px',
+      textAlign: 'center' as 'center', // Explicitly type textAlign
+    },
+    successMessage: { // Style for success message (extends messageDisplay)
+      backgroundColor: '#d4edda',
+      color: '#155724',
+    },
+    errorMessage: { // Style for error message (extends messageDisplay)
+      backgroundColor: '#f8d7da',
+      color: '#721c24',
+    }
   };
 
   return (
@@ -155,10 +205,24 @@ const ContactFormWidget: React.FC<ContactFormWidgetProps> = ({
         <input type="hidden" name="ga_client_id" value={gaClientId} />
         <input type="hidden" name="ga_session_id" value={gaSessionId} />
 
-        <button type="submit" style={styles.button}>
-          {submitButtonText}
+        <button
+          type="submit"
+          style={isSubmitting ? { ...styles.button, ...styles.buttonDisabled } : styles.button}
+          disabled={isSubmitting}
+        >
+          {isSubmitting ? 'Submitting...' : submitButtonText}
         </button>
       </form>
+
+      {submitMessage && (
+        <div style={{
+          ...styles.messageDisplay,
+          ...(submitStatus === 'success' ? styles.successMessage : {}),
+          ...(submitStatus === 'error' ? styles.errorMessage : {}),
+        }}>
+          {submitMessage}
+        </div>
+      )}
     </div>
   );
 };

@@ -37,26 +37,32 @@ class ContactFormPayload(BaseModel):
     name: str
     email: str
     message: str
-    tenant_id: str # Added
+    # tenant_id is expected from the client payload.
+    # It identifies the tenant associated with this form submission.
+    tenant_id: str
     ga_client_id: Optional[str] = None
     ga_session_id: Optional[str] = None
-    form_id: Optional[str] = None # Added
+    # form_id is an optional field that identifies the specific form used for submission.
+    # It is used for logging and for GA4 event generation to associate the lead with a particular form.
+    form_id: Optional[str] = None
 
-class SubmissionResponse(BaseModel): # Newly added
+class SubmissionResponse(BaseModel):
     id: int
     created_at: datetime
     name: str
     email: str
     message: str
-    tenant_id: str # Added
+    # tenant_id is included in the response, reflecting the value from the payload.
+    tenant_id: str
     ga_client_id: Optional[str] = None
     ga_session_id: Optional[str] = None
+    # form_id is included in the response, reflecting the value from the payload.
     form_id: Optional[str] = None
-    submission_status: Optional[str] = None # Assuming this comes from DB
-    status_change_reason: Optional[str] = None # Assuming this comes from DB
-    updated_at: Optional[datetime] = None # Assuming this comes from DB
+    # Note: submission_status, status_change_reason, and updated_at are not part of the
+    # contact_submissions table as per the current schema and are thus excluded here.
+    # If these are added to the DB later, this model should be updated.
 
-    model_config = ConfigDict(from_attributes=True) # Added for consistency/ORM mode
+    model_config = ConfigDict(from_attributes=True)
 
 # --- Models for /chat endpoint ---
 class ChatMessage(BaseModel):
@@ -75,7 +81,9 @@ async def handle_form_submission(
     payload: ContactFormPayload,
     supabase: Optional[Client] = Depends(get_supabase_client)
 ):
-    logger.info(f"Received form submission: {payload.model_dump_json()}") # Use model_dump_json for logging Pydantic V2
+    # Log the received payload, ensuring form_id is included if present.
+    log_payload = payload.model_dump_json()
+    logger.info(f"Received form submission for form_id '{payload.form_id}': {log_payload}")
 
     if supabase is None:
         logger.error("Supabase client not available for /submit endpoint.")
@@ -94,15 +102,16 @@ async def handle_form_submission(
 
         if response.data and len(response.data) > 0:
             inserted_record = response.data[0]
-            logger.info(f"Successfully inserted submission. ID: {inserted_record.get('id')}")
+            logger.info(f"Successfully inserted submission. ID: {inserted_record.get('id')}, form_id: {payload.form_id}")
 
             # --- GA4 generate_lead イベント送信 ---
-            if payload.tenant_id and payload.form_id and payload.ga_client_id: # Added tenant_id check
+            # form_id is used here to fetch specific GA configuration and as a label in the GA event.
+            if payload.tenant_id and payload.form_id and payload.ga_client_id:
                 try:
                     ga_config_dict = form_ga_config_service.get_ga_configuration(
                         supabase,
-                        tenant_id=payload.tenant_id, # Pass tenant_id
-                        form_id=payload.form_id
+                        tenant_id=payload.tenant_id,
+                        form_id=payload.form_id # form_id is used here
                     )
                     if ga_config_dict:
                         api_secret = ga_config_dict.get("ga4_api_secret")
@@ -111,7 +120,7 @@ async def handle_form_submission(
                         if api_secret and measurement_id:
                             event_params = {
                                 "event_category": "contact_form",
-                                "event_label": payload.form_id,
+                                "event_label": payload.form_id, # form_id is used as the event label
                             }
                             if payload.ga_session_id:
                                 event_params["session_id"] = payload.ga_session_id
@@ -131,16 +140,33 @@ async def handle_form_submission(
                             if not ga_sent_successfully:
                                 logger.warning(f"generate_lead event sending to GA4 may have failed for form_id: {payload.form_id} (see previous logs from ga4_mp_service).")
                         else:
-                            logger.warning(f"GA4 API secret or Measurement ID missing in config for form_id '{payload.form_id}'. Cannot send generate_lead event.")
+                            logger.warning(f"GA4 API secret or Measurement ID missing in config for tenant_id '{payload.tenant_id}', form_id '{payload.form_id}'. Cannot send generate_lead event.")
                     else:
                         logger.warning(f"GA4 configuration not found for tenant_id '{payload.tenant_id}', form_id '{payload.form_id}'. Cannot send generate_lead event.")
                 except Exception as e_ga_setup: # Catch errors during GA config fetch or event construction
                     logger.error(f"Error during GA4 event preparation for generate_lead (tenant_id: {payload.tenant_id}, form_id: {payload.form_id}): {e_ga_setup}", exc_info=True)
             else:
-                logger.info("Skipping GA4 generate_lead event: tenant_id, form_id or ga_client_id missing from payload for submission ID: %s.", inserted_record.get('id'))
+                # Clarify logging for missing components for GA4 event
+                missing_params_log = []
+                if not payload.tenant_id: missing_params_log.append("tenant_id")
+                if not payload.form_id: missing_params_log.append("form_id")
+                if not payload.ga_client_id: missing_params_log.append("ga_client_id")
+                logger.info(f"Skipping GA4 generate_lead event for submission ID {inserted_record.get('id')}: required field(s) missing: {', '.join(missing_params_log)}.")
             # --- GA4 イベント送信ここまで ---
 
-            return SubmissionResponse(**inserted_record)
+            # Ensure all fields expected by SubmissionResponse are present in inserted_record
+            # or are available from the payload.
+            response_data = {**inserted_record}
+            # tenant_id comes from the payload and is not in contact_submissions table
+            # but it is part of the SubmissionResponse model.
+            if 'tenant_id' not in response_data: # Should not happen if insert worked as expected
+                response_data['tenant_id'] = payload.tenant_id
+            # form_id also comes from the payload and is part of SubmissionResponse
+            if 'form_id' not in response_data and payload.form_id is not None:
+                 response_data['form_id'] = payload.form_id
+
+
+            return SubmissionResponse(**response_data)
         else:
             # Log the actual response from Supabase for debugging
             logger.error(
