@@ -24,12 +24,11 @@ version: '3.8'
 
 services:
   frontend:
-    # build:
-    #   context: ./frontend
-    #   dockerfile: Dockerfile.dev  # Placeholder: Dockerfile needs to be created in ./frontend
-    image: node:18-alpine  # Using a pre-built Node.js image for placeholder
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
     container_name: contact_form_frontend_dev
-    command: sh -c "echo 'Frontend container running (placeholder). In a real setup, this would run your dev server (e.g., npm start).' && tail -f /dev/null"
+    command: npm run dev
     ports:
       - "3000:3000"  # Standard port for React/Vue/Angular dev servers
     volumes:
@@ -46,12 +45,11 @@ services:
     restart: unless-stopped
 
   backend:
-    # build:
-    #   context: ./backend
-    #   dockerfile: Dockerfile.dev  # Placeholder: Dockerfile needs to be created in ./backend
-    image: python:3.11-slim  # Using a pre-built Python image for placeholder
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
     container_name: contact_form_backend_dev
-    command: sh -c "echo 'Backend container running (placeholder). In a real setup, this would run your FastAPI/uvicorn server.' && tail -f /dev/null"
+    command: uvicorn contact_api:app --host 0.0.0.0 --port 8000 --reload
     ports:
       - "8000:8000"  # Standard port for Python web frameworks like FastAPI/Flask
     volumes:
