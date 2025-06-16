@@ -2,20 +2,22 @@
 FROM python:3.11-slim
 
 # Set the working directory in the container
-WORKDIR /app
+WORKDIR /code
 
-# Copy the requirements file into the container at /app
+# Copy the requirements file into the container at /code
 COPY requirements.txt ./
 
 # Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application code
-COPY . .
+# Copy the rest of the application code from context (backend/) into /code/app
+COPY . ./app/
+
+# Add /code to PYTHONPATH so 'app' package can be found
+ENV PYTHONPATH "${PYTHONPATH}:/code"
 
 # Make port 8000 available to the world outside this container
 EXPOSE 8000
 
 # Run uvicorn server when the container launches
-# Adjust the main:app part if your FastAPI application instance is named differently or located in a different file
-CMD ["uvicorn", "contact_api:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD ["uvicorn", "app.contact_api:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
