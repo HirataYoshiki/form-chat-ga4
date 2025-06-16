@@ -30,14 +30,13 @@ services:
     container_name: contact_form_frontend_dev
     command: npm run dev
     ports:
-      - "3000:3000"  # Standard port for React/Vue/Angular dev servers
+      - "3000:3000"
     volumes:
       # Mount the local frontend directory into the container for live reloading.
-      # The Dockerfile would typically set /app as the working directory and copy package.json, run npm install, etc.
       - ./frontend:/app
-      # Example for node_modules (can improve performance on some systems, but often not needed initially):
-      # - /app/node_modules
-    working_dir: /app # Assumes your frontend Dockerfile sets this up and runs npm install
+      # Use a named volume for node_modules to persist them and avoid being overwritten by the host mount.
+      - frontend_node_modules:/app/node_modules
+    working_dir: /app
     environment:
       - NODE_ENV=development
       # Add other frontend specific environment variables here
@@ -49,14 +48,13 @@ services:
       context: ./backend
       dockerfile: Dockerfile.dev
     container_name: contact_form_backend_dev
-    command: uvicorn contact_api:app --host 0.0.0.0 --port 8000 --reload
+    # Command is now taken from Dockerfile's CMD
     ports:
-      - "8000:8000"  # Standard port for Python web frameworks like FastAPI/Flask
+      - "8000:8000"
     volumes:
-      # Mount the local backend directory into the container for live reloading.
-      # The Dockerfile would typically set /app as the working directory, copy requirements.txt, run pip install, etc.
-      - ./backend:/app
-    working_dir: /app # Assumes your backend Dockerfile sets this up and runs pip install
+      # Mount the local backend directory into /code/app in the container
+      - ./backend:/code/app
+    working_dir: /code # Working directory from where CMD will be executed
     environment:
       - PYTHONUNBUFFERED=1 # Ensures print statements and logs are sent straight to terminal
       - APP_ENV=development
@@ -64,10 +62,6 @@ services:
       # e.g., DATABASE_URL, API_KEYS (preferably via .env file and docker-compose env_file property)
     restart: unless-stopped
 
-# Notes on further development:
-# - Create Dockerfile.dev for both frontend and backend.
-# - Frontend Dockerfile: Copy package.json, run npm install, expose port, set CMD for dev server.
-# - Backend Dockerfile: Copy requirements.txt, run pip install, expose port, set CMD for uvicorn.
-# - Consider adding a database service if local testing against Postgres is desired.
-# - For production, create Dockerfile (optimized for smaller size, security) and potentially a
-#   separate docker-compose.prod.yml or override file.
+# Declare the named volume
+volumes:
+  frontend_node_modules:
